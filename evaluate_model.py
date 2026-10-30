@@ -15,7 +15,7 @@ env = gym.wrappers.RecordVideo(
 )
 
 # 3. Load the fully trained shaped model
-model_path = "models/PPO_Shaped/ppo_lunarlander_shaped_500k.zip"
+model_path = "models/PPO_Final/ppo_lunarlander_final_1M.zip"
 print(f"Loading model from {model_path}...")
 model = PPO.load(model_path, env=env)
 
