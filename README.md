@@ -1,4 +1,4 @@
-# Autonomous Rocket Landing Policy
+# RL Rocket Landing Policy
 
 This project trains a neural network to land a simulated rocket using Reinforcement Learning. It uses Proximal Policy Optimization (PPO) to learn flight dynamics and custom reward shaping to ensure the agent lands safely within a designated target area.
 
