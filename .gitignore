@@ -1,0 +1,13 @@
+# Python environment
+venv/
+__pycache__/
+*.pyc
+
+# Logs and checkpoints (we will generate these later)
+logs/
+models/
+*.zip
+
+# OS files
+.DS_Store
+Thumbs.db
