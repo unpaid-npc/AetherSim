@@ -2,28 +2,35 @@ import gymnasium as gym
 from stable_baselines3 import PPO
 import numpy as np
 
-# 1. Load the environment with graphics enabled so we can watch
-env = gym.make("LunarLander-v3", render_mode="human")
+# 1. Initialize the base environment (no shaping penalties!)
+# render_mode="rgb_array" is required for video recording
+base_env = gym.make("LunarLander-v3", render_mode="rgb_array")
 
-# 2. Load the trained weights
-model_path = "models/PPO/ppo_lunarlander_100k.zip"
+# 2. Wrap the environment to record video of every episode
+env = gym.wrappers.RecordVideo(
+    base_env, 
+    video_folder="videos", 
+    name_prefix="shaped_lander",
+    episode_trigger=lambda x: True # Record all episodes
+)
+
+# 3. Load the fully trained shaped model
+model_path = "models/PPO_Shaped/ppo_lunarlander_shaped_500k.zip"
 print(f"Loading model from {model_path}...")
 model = PPO.load(model_path, env=env)
 
 episodes = 5
 episode_rewards = []
 
-# 3. The Evaluation Loop
+# 4. Evaluation Loop
 for ep in range(episodes):
-    # Using a fixed seed ensures the terrain and starting physics are the same every time we run this script
-    obs, info = env.reset(seed=42 + ep) 
+    obs, info = env.reset(seed=42 + ep)
     done = False
     total_reward = 0
     
     while not done:
-        # deterministic=True removes exploration noise. The agent uses its exact learned policy.
-        action, _states = model.predict(obs, deterministic=True)
-        
+        # deterministic=True ensures the agent uses its optimal learned policy
+        action, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward += reward
         done = terminated or truncated
@@ -33,7 +40,7 @@ for ep in range(episodes):
 
 env.close()
 
-# 4. Final Statistics
-print("\n--- TRAINED MODEL EVALUATION ---")
+# 5. Final Statistics
+print("\n--- FINAL TRAINED MODEL EVALUATION ---")
 print(f"Mean Reward: {np.mean(episode_rewards):.2f}")
 print(f"Std Reward: {np.std(episode_rewards):.2f}")
