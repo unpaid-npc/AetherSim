@@ -24,6 +24,10 @@ export interface SimDiagnostics {
   isElectron: boolean;
   drawCalls: number;
   triangles: number;
+  aiState?: string;
+  aiEpisodes?: number;
+  aiTotalSteps?: number;
+  aiMeanReturn?: number;
 }
 
 declare global {

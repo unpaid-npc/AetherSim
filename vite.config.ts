@@ -9,8 +9,8 @@ function cspMetaPlugin(): Plugin {
     },
     transformIndexHtml(html) {
       const policy = isServe
-        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' http://127.0.0.1:5173; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173;"
-        : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';";
+        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' http://127.0.0.1:5173; worker-src 'self' blob: http://127.0.0.1:5173; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173;"
+        : "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';";
 
       return html.replace(
         "<head>",

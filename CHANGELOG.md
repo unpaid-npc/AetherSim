@@ -5,8 +5,24 @@ All notable changes to **AetherSim** are documented in this file following [Keep
 ---
 
 ## [Unreleased]
-- Milestone 2 (`v0.4.0`): Live Web Worker PPO neural network engine, crash-learning sandbox, ghost trajectories, and model checkpoints.
 - Milestone 3 (`v0.5.0`): Aerospace Research Workbench (live plots, NN activation viewer, deterministic fault injection, Monte Carlo batch runner & CSV/JSON export, GSAP camera cuts, WebAudio).
+- Milestone 4 (`v1.0.0`): Full verification, GPU/CPU profiling, and Windows `.exe` packaging.
+
+---
+
+## [0.4.0] — 2026-11-25
+### Added
+- **Pure TypeScript Continuous-Control PPO Engine (`src/ai/`)**:
+  - `prng.ts`: Deterministic Mulberry32 PRNG with Box-Muller Gaussian sampling and Fisher-Yates shuffling.
+  - `NeuralNetwork.ts`: `Float32Array` Actor-Critic MLP (`14 -> 64 -> 64 -> 3` actor mean + learnable `logStd`, `14 -> 64 -> 64 -> 1` critic) with orthogonal initialization, exact analytical backpropagation, Adam optimizer with global L2 gradient clipping (`0.5`), `forwardWithActivations()` snapshot hook, and versioned JSON checkpoint `serialize()` / `deserialize()`.
+  - `RLEnvironment.ts`: Deterministic `20 Hz` (`dt = 0.05 s`) RL wrapper around `FlightController` for Mars, Earth, and Moon (`landing` & `launch`), 14D normalized observations, 3D continuous action mapping, optional domain randomization, and decomposed reward breakdown (`distance`, `velocity`, `attitude`, `fuel`, `terminal`).
+  - `PPOTrainer.ts`: Flat `RolloutBuffer`, GAE ($\gamma = 0.99, \lambda = 0.95$), clipped surrogate loss ($\epsilon = 0.2$), value loss, entropy bonus, Schulman approx-KL early stopping, optional Behavioral Cloning `warmStartFromGuidance()`, and deterministic `evaluateBatch()`.
+  - `ppoWorker.ts` & `PPOWorkerClient.ts`: Dedicated Vite Web Worker executing background turbo PPO training off the WebGL thread.
+- **Live 3D Neural AI Integration & HUD (`FlightController.ts`, `SceneManager.ts`, `src/main.ts`, `src/style.css`)**:
+  - Added `"ai_ppo"` control mode (`AI (PPO)`) alongside `PID AUTO` and `MANUAL`, with continuous `[throttle, pitchCmd, yawCmd]` control, live 3D "learn-from-crashes" episode loop (`LIVE TRAIN`), background `TURBO TRAIN`, deterministic `EVAL (DET)`, `WARM-START`, LR/domain-randomization controls, and `.json` checkpoint save/load.
+  - Added `src/__tests__/ppoAI.test.ts` verifying deterministic forward passes, checkpoint round-trips, Adam gradient convergence, decomposed rewards, and headless Pure PPO learning (`-2346.13` $\rightarrow$ `-326.58` mean return at `41,164 steps/s`).
+- **Line-Ending & Worker CSP Hygiene**:
+  - Added `.gitattributes` (`* text=auto eol=lf`, binary media rules) and `worker-src 'self' blob:` CSP rules in `vite.config.ts` and `electron/main.cjs`.
 
 ---
 
