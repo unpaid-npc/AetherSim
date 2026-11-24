@@ -2,7 +2,36 @@ import { type PlanetConfig, type PlanetId, getPlanetConfig } from "../config/pla
 import { PAD_FLAT_RADIUS_M, SeededNoise2D, samplePlanetTerrainHeight } from "../utils/noise";
 
 export type MissionMode = "launch" | "landing";
-export type ControlMode = "autopilot" | "manual";
+export type ControlMode = "ai_ppo" | "autopilot" | "manual";
+
+export interface AIActionInput {
+  throttle: number;
+  pitchCmd: number;
+  yawCmd: number;
+  autoLegs?: boolean;
+}
+
+export interface RLSpawnOverrides {
+  planetId?: PlanetId;
+  missionMode?: MissionMode;
+  position?: { x: number; y: number; z: number };
+  velocity?: { x: number; y: number; z: number };
+  pitch?: number;
+  roll?: number;
+  yaw?: number;
+  shipFuel?: number;
+  boosterFuel?: number;
+  phase?: FlightPhase;
+  running?: boolean;
+  hasLiftedOff?: boolean;
+  stageSeparated?: boolean;
+  landingLegsDeployed?: number;
+  targetLandingLegs?: number;
+  flapAngleRad?: number;
+  frostLevel?: number;
+  umbilicalRetracted?: number;
+  catchArmsOpen?: number;
+}
 
 export type FlightPhase =
   | "PRELAUNCH"
@@ -395,12 +424,16 @@ export class FlightController {
     return true;
   }
 
-  update(dt: number, manualInput?: ManualInputState): FlightTelemetry {
+  update(
+    dt: number,
+    manualInput?: ManualInputState,
+    aiAction?: AIActionInput
+  ): FlightTelemetry {
     const safeDt = clamp(dt, 0, 0.1);
     if (this.running && !this.paused && !this.isTerminalPhase()) {
       this.accumulator += safeDt;
       while (this.accumulator >= FIXED_DT) {
-        this.stepFixed(FIXED_DT, manualInput);
+        this.stepFixed(FIXED_DT, manualInput, aiAction);
         this.accumulator -= FIXED_DT;
         if (this.isTerminalPhase()) {
           this.accumulator = 0;
@@ -409,6 +442,73 @@ export class FlightController {
       }
     }
     return this.getTelemetry();
+  }
+
+  /** Executes a single deterministic fixed-dt step directly (for RL / Web Worker rollouts). */
+  stepFixedDirect(dt = FIXED_DT, aiAction?: AIActionInput): FlightTelemetry {
+    if (this.running && !this.paused && !this.isTerminalPhase()) {
+      this.stepFixed(dt, undefined, aiAction);
+    }
+    return this.getTelemetry();
+  }
+
+  /** Configures deterministic or domain-randomized initial spawn state for RL episodes. */
+  configureRLSpawn(overrides: RLSpawnOverrides): void {
+    const planetId = overrides.planetId ?? this.planet.id;
+    const mode = overrides.missionMode ?? this.missionMode;
+    this.reset(planetId, this.padDeckY, mode);
+
+    if (overrides.position) {
+      this.pos = { ...overrides.position };
+    }
+    if (overrides.velocity) {
+      this.vel = { ...overrides.velocity };
+    }
+    if (overrides.pitch !== undefined) {
+      this.pitch = overrides.pitch;
+    }
+    if (overrides.roll !== undefined) {
+      this.roll = overrides.roll;
+    }
+    if (overrides.yaw !== undefined) {
+      this.yaw = overrides.yaw;
+    }
+    if (overrides.shipFuel !== undefined) {
+      this.shipFuel = clamp(overrides.shipFuel, 0, 1);
+    }
+    if (overrides.boosterFuel !== undefined) {
+      this.boosterFuel = clamp(overrides.boosterFuel, 0, 1);
+    }
+    if (overrides.phase !== undefined) {
+      this.phase = overrides.phase;
+    }
+    if (overrides.running !== undefined) {
+      this.running = overrides.running;
+    }
+    if (overrides.hasLiftedOff !== undefined) {
+      this.hasLiftedOff = overrides.hasLiftedOff;
+    }
+    if (overrides.stageSeparated !== undefined) {
+      this.stageSeparated = overrides.stageSeparated;
+    }
+    if (overrides.landingLegsDeployed !== undefined) {
+      this.landingLegsDeployed = overrides.landingLegsDeployed;
+    }
+    if (overrides.targetLandingLegs !== undefined) {
+      this.targetLandingLegs = overrides.targetLandingLegs;
+    }
+    if (overrides.flapAngleRad !== undefined) {
+      this.flapAngleRad = overrides.flapAngleRad;
+    }
+    if (overrides.frostLevel !== undefined) {
+      this.frostLevel = overrides.frostLevel;
+    }
+    if (overrides.umbilicalRetracted !== undefined) {
+      this.umbilicalRetracted = overrides.umbilicalRetracted;
+    }
+    if (overrides.catchArmsOpen !== undefined) {
+      this.catchArmsOpen = overrides.catchArmsOpen;
+    }
   }
 
   private isTerminalPhase(): boolean {
@@ -460,7 +560,11 @@ export class FlightController {
     return rho0 * Math.exp(-Math.max(0, altitudeM) / (hScaleKm * 1000));
   }
 
-  private stepFixed(dt: number, manualInput?: ManualInputState): void {
+  private stepFixed(
+    dt: number,
+    manualInput?: ManualInputState,
+    aiAction?: AIActionInput
+  ): void {
     this.missionTimeSec += dt;
     const surfaceY = this.getSurfaceHeightAt(this.pos.x, this.pos.z);
     const altM = Math.max(0, this.pos.y - surfaceY);
@@ -483,9 +587,9 @@ export class FlightController {
     this.mach = rho > 0 ? speed / 340 : 0;
 
     if (this.missionMode === "launch") {
-      this.stepLaunchMode(dt, altM, rho, manualInput);
+      this.stepLaunchMode(dt, altM, rho, manualInput, aiAction);
     } else {
-      this.stepLandingMode(dt, altM, rho, manualInput);
+      this.stepLandingMode(dt, altM, rho, manualInput, aiAction);
     }
 
     this.landingLegsDeployed = approach(
@@ -756,11 +860,101 @@ export class FlightController {
     this.rcsThrust = { pitch: rcsPitch, yaw: rcsYaw, roll: rcsRoll };
   }
 
+  private applyAIAction(
+    dt: number,
+    input: AIActionInput,
+    activeThrottle: number
+  ): void {
+    this.throttle = clamp(input.throttle, 0, 1);
+
+    const rcsPitchYawAccel = 2.2;
+    const tvcAuthority = activeThrottle > 0.02 ? 2.4 * activeThrottle : 0;
+    const maxPitchRollAccel = rcsPitchYawAccel + tvcAuthority;
+    const maxYawAccel = 1.85;
+    const targetMaxRate = 0.95;
+
+    const pitchCmd = clamp(input.pitchCmd, -1, 1);
+    const rollCmd = clamp(input.yawCmd, -1, 1);
+
+    const targetPitchRate = pitchCmd * targetMaxRate;
+    const pitchAccel = clamp(
+      (targetPitchRate - this.pitchVel) * 8.5,
+      -maxPitchRollAccel,
+      maxPitchRollAccel
+    );
+    this.pitchVel += pitchAccel * dt;
+    const rcsPitch = clamp(pitchAccel / maxPitchRollAccel, -1, 1);
+
+    const targetRollRate = rollCmd * targetMaxRate;
+    const rollAccel = clamp(
+      (targetRollRate - this.rollVel) * 8.5,
+      -maxPitchRollAccel,
+      maxPitchRollAccel
+    );
+    this.rollVel += rollAccel * dt;
+    const rcsRoll = clamp(rollAccel / maxPitchRollAccel, -1, 1);
+
+    // Automatically damp longitudinal roll-axis spin (yaw) so 3D AI control stays clean
+    const yawDamp = clamp(-this.yawVel * 6.0, -maxYawAccel, maxYawAccel);
+    this.yawVel += yawDamp * dt;
+    if (Math.abs(this.yawVel) < 0.005) {
+      this.yawVel = 0;
+    }
+    const rcsYaw = clamp(yawDamp / maxYawAccel, -1, 1);
+
+    this.pitch = clamp(this.pitch + this.pitchVel * dt, -Math.PI * 0.78, Math.PI * 0.78);
+    this.roll = clamp(this.roll + this.rollVel * dt, -Math.PI * 0.78, Math.PI * 0.78);
+    this.yaw += this.yawVel * dt;
+
+    this.gimbalX = activeThrottle > 0.02 ? clamp(pitchCmd * 0.2618, -0.2618, 0.2618) : 0;
+    this.gimbalZ = activeThrottle > 0.02 ? clamp(rollCmd * 0.2618, -0.2618, 0.2618) : 0;
+    this.rcsThrust = { pitch: rcsPitch, yaw: rcsYaw, roll: rcsRoll };
+  }
+
+  /**
+   * Computes classical proportional guidance [throttle, pitchCmd, yawCmd] for the current state.
+   * Used exclusively by the optional opt-in Behavioral Cloning warm-start before PPO fine-tuning.
+   */
+  computeClassicalGuidanceAction(): AIActionInput {
+    const surfaceY = this.getSurfaceHeightAt(this.pos.x, this.pos.z);
+    const altM = Math.max(0, this.pos.y - surfaceY);
+    const g = this.planet.physics.gravityMps2;
+
+    if (this.missionMode === "launch") {
+      const maxAccelAvailable = this.stageSeparated ? 24.0 : 22.0;
+      const desiredNetClimb = this.stageSeparated ? 12.5 : 8.5;
+      const throttle = clamp((g + desiredNetClimb) / maxAccelAvailable, 0.28, 1.0);
+      const targetPitch = altM < 90 ? 0 : clamp((altM - 90) / 3600, 0, 0.72);
+      const pitchCmd = clamp((targetPitch - this.pitch) * 3.0 - this.pitchVel * 0.8, -1, 1);
+      const yawCmd = clamp((0 - this.roll) * 3.0 - this.rollVel * 0.8, -1, 1);
+      return { throttle, pitchCmd, yawCmd, autoLegs: false };
+    }
+
+    const maxShipAccel = 26.0;
+    const timeToGo = clamp(altM / Math.max(5, -this.vel.y + 3), 0.7, 22);
+    const targetVx = clamp(-this.pos.x / Math.max(1.6, timeToGo * 0.72), -24, 24);
+    const targetVz = clamp(-this.pos.z / Math.max(1.6, timeToGo * 0.72), -24, 24);
+    const maxTilt = altM < 12 ? 0.06 : altM < 45 ? 0.16 : 0.44;
+    const desiredPitch = clamp((targetVx - this.vel.x) * 0.095, -maxTilt, maxTilt);
+    const desiredRoll = clamp((targetVz - this.vel.z) * 0.095, -maxTilt, maxTilt);
+
+    const pitchCmd = clamp((desiredPitch - this.pitch) * 3.2 - this.pitchVel * 0.65, -1, 1);
+    const yawCmd = clamp((desiredRoll - this.roll) * 3.2 - this.rollVel * 0.65, -1, 1);
+
+    const targetVy = altM > 14 ? -clamp(1.4 + Math.sqrt(altM) * 1.12, 1.8, 42) : -1.4;
+    const verticalError = targetVy - this.vel.y;
+    const cosTilt = Math.max(0.5, Math.cos(this.pitch) * Math.cos(this.roll));
+    const desiredVerticalAccel = g + verticalError * 3.2;
+    const throttle = clamp(desiredVerticalAccel / (cosTilt * maxShipAccel), 0.0, 1.0);
+    return { throttle, pitchCmd, yawCmd, autoLegs: true };
+  }
+
   private stepLaunchMode(
     dt: number,
     altM: number,
     rho: number,
-    manualInput?: ManualInputState
+    manualInput?: ManualInputState,
+    aiAction?: AIActionInput
   ): void {
     const g = this.planet.physics.gravityMps2;
 
@@ -792,6 +986,13 @@ export class FlightController {
     if (this.controlMode === "manual" && manualInput) {
       const prelimThrottle = hasFuel ? this.throttle : 0;
       this.applyManualRotationAndThrottle(dt, manualInput, prelimThrottle);
+    } else if (this.controlMode === "ai_ppo") {
+      const prelimThrottle = hasFuel ? this.throttle : 0;
+      this.applyAIAction(
+        dt,
+        aiAction ?? { throttle: prelimThrottle, pitchCmd: 0, yawCmd: 0 },
+        prelimThrottle
+      );
     } else {
       const isEarthMaxQ =
         !this.stageSeparated && this.planet.id === "earth" && altM > 400 && altM < 900;
@@ -819,7 +1020,7 @@ export class FlightController {
       this.shipThrottle = 0;
       this.boosterFuel = Math.max(0, this.boosterFuel - activeThrottle * 0.018 * dt);
       if (
-        this.controlMode === "autopilot" &&
+        (this.controlMode === "autopilot" || this.controlMode === "ai_ppo") &&
         (altM >= 2200 || this.boosterFuel <= 0.16)
       ) {
         this.triggerStageSeparation();
@@ -881,7 +1082,8 @@ export class FlightController {
     dt: number,
     altM: number,
     rho: number,
-    manualInput?: ManualInputState
+    manualInput?: ManualInputState,
+    aiAction?: AIActionInput
   ): void {
     this.tClockSec += dt;
     const g = this.planet.physics.gravityMps2;
@@ -892,6 +1094,18 @@ export class FlightController {
       this.applyManualRotationAndThrottle(dt, manualInput, prelimThrottle);
       if (altM < 280) {
         this.phase = "FLIP_BURN";
+      }
+    } else if (this.controlMode === "ai_ppo") {
+      const prelimThrottle = this.shipFuel > 0 ? this.throttle : 0;
+      this.applyAIAction(
+        dt,
+        aiAction ?? { throttle: prelimThrottle, pitchCmd: 0, yawCmd: 0, autoLegs: true },
+        prelimThrottle
+      );
+      this.phase = altM > 340 && rho > 0.0005 && this.throttle < 0.05 ? "DESCENT" : "FLIP_BURN";
+      this.flapAngleRad = approach(this.flapAngleRad, this.phase === "DESCENT" ? 0.95 : 0.14, dt * 2.2);
+      if ((aiAction?.autoLegs ?? true) && altM <= 80) {
+        this.targetLandingLegs = 1.0;
       }
     } else {
       const isAtmospheric = rho > 0.0005;

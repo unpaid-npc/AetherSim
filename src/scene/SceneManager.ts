@@ -1,11 +1,29 @@
 import gsap from "gsap";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import type {
+  ActivationSnapshot,
+  PolicyCheckpoint,
+} from "../ai/NeuralNetwork";
+import { PPOTrainer, type TrainingMetrics } from "../ai/PPOTrainer";
+import { PPOWorkerClient } from "../ai/PPOWorkerClient";
+import { SeededPRNG } from "../ai/prng";
+import {
+  ACTION_DIM,
+  OBS_DIM,
+  RL_CONTROL_DT,
+  applyRLSpawnToController,
+  computeStepReward,
+  extractObservation,
+  isRLOutOfBounds,
+  mapRawActionToAIInput,
+} from "../ai/RLEnvironment";
 import { type PlanetConfig, type PlanetId, getPlanetConfig } from "../config/planets";
 import { ExplosionSystem } from "../effects/ExplosionSystem";
 import { PropulsionEffects, type QualityPreset } from "../effects/PropulsionEffects";
 import { AtmosphereDome } from "../shaders/atmosphereShader";
 import {
+  type AIActionInput,
   type ControlMode,
   FlightController,
   type FlightTelemetry,
@@ -19,6 +37,21 @@ import { StarshipVehicle } from "./StarshipVehicle";
 import { TerrainSystem } from "./TerrainSystem";
 
 export type CameraFocusMode = "rocket" | "base";
+export type AITrainingMode = "idle" | "live_train" | "turbo_train" | "eval";
+
+export interface AIStatusSnapshot {
+  mode: AITrainingMode;
+  learningRate: number;
+  randomizeSpawn: boolean;
+  metrics: TrainingMetrics;
+  outputs: {
+    throttle: number;
+    pitchCmd: number;
+    yawCmd: number;
+    value: number;
+  };
+  lastError: string | null;
+}
 
 export interface SceneTelemetry {
   fps: number;
@@ -27,6 +60,7 @@ export interface SceneTelemetry {
   triangles: number;
   quality: QualityPreset;
   flight: FlightTelemetry;
+  ai: AIStatusSnapshot;
 }
 
 /**
@@ -73,6 +107,36 @@ export class SceneManager {
     rollInput: 0,
   };
 
+  // Milestone 2: Continuous-Control PPO AI state
+  private readonly liveTrainer: PPOTrainer;
+  private readonly workerClient: PPOWorkerClient;
+  private aiMode: AITrainingMode = "idle";
+  private aiLearningRate = 6e-4;
+  private aiRandomizeSpawn = true;
+  private aiLastError: string | null = null;
+  private readonly aiPrng = new SeededPRNG(1337);
+  private aiDecisionTimer = 0;
+  private aiCurrentAction: AIActionInput = {
+    throttle: 0.5,
+    pitchCmd: 0,
+    yawCmd: 0,
+    autoLegs: true,
+  };
+  private aiLastActivations: ActivationSnapshot | null = null;
+  private aiLastOutputs = { throttle: 0, pitchCmd: 0, yawCmd: 0, value: 0 };
+  private aiMetrics: TrainingMetrics;
+  private aiHistory: TrainingMetrics[] = [];
+
+  private liveEpActive = false;
+  private liveEpSteps = 0;
+  private liveEpReturn = 0;
+  private liveResetWaitTimer = 0;
+  private livePrevTel: FlightTelemetry | null = null;
+  private liveLastObs: Float32Array | null = null;
+  private readonly liveLastRawAction = new Float32Array(ACTION_DIM);
+  private liveLastLogProb = 0;
+  private liveLastValue = 0;
+
   private rafId = 0;
   private disposed = false;
   private elapsedSec = 0;
@@ -91,6 +155,48 @@ export class SceneManager {
     this.canvas = canvas;
     this.onTelemetry = onTelemetry;
     this.currentPlanet = getPlanetConfig(initialPlanetId);
+
+    this.liveTrainer = new PPOTrainer(
+      {
+        planetId: initialPlanetId,
+        missionMode: "landing",
+        randomizeSpawn: this.aiRandomizeSpawn,
+      },
+      { learningRate: this.aiLearningRate, rolloutSteps: 256 },
+      42
+    );
+    this.aiMetrics = this.liveTrainer.getLastMetrics();
+
+    this.workerClient = new PPOWorkerClient({
+      onProgress: (metrics, checkpoint, historyTail, running) => {
+        this.liveTrainer.loadCheckpoint(checkpoint);
+        this.aiMetrics = metrics;
+        this.aiHistory = historyTail;
+        this.aiLastError = null;
+        if (!running && this.aiMode === "turbo_train") {
+          this.aiMode = "idle";
+        }
+        this.emitTelemetryNow();
+      },
+      onPaused: (metrics, checkpoint) => {
+        this.liveTrainer.loadCheckpoint(checkpoint);
+        this.aiMetrics = metrics;
+        if (this.aiMode === "turbo_train") {
+          this.aiMode = "idle";
+        }
+        this.emitTelemetryNow();
+      },
+      onReady: (metrics, checkpoint) => {
+        this.liveTrainer.loadCheckpoint(checkpoint);
+        this.aiMetrics = metrics;
+        this.emitTelemetryNow();
+      },
+      onError: (message) => {
+        this.aiLastError = message;
+        this.aiMode = "idle";
+        this.emitTelemetryNow();
+      },
+    });
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
@@ -388,18 +494,330 @@ export class SceneManager {
     this.explosionSystem.setPlanet(next);
     this.applyPlanetEnvironment(next);
 
+    const mission = this.flightController.getTelemetry().missionMode;
+    this.liveTrainer.setEnvConfig(id, mission, this.aiRandomizeSpawn);
+    if (this.aiMode === "turbo_train") {
+      this.workerClient.startTurboTrain(
+        id,
+        mission,
+        this.aiRandomizeSpawn,
+        this.aiLearningRate
+      );
+    }
+
     this.resetMission();
     return next;
   }
 
   setMissionMode(mode: MissionMode): void {
     this.flightController.setMissionMode(mode);
+    this.liveTrainer.setEnvConfig(this.currentPlanet.id, mode, this.aiRandomizeSpawn);
+    if (this.aiMode === "turbo_train") {
+      this.workerClient.startTurboTrain(
+        this.currentPlanet.id,
+        mode,
+        this.aiRandomizeSpawn,
+        this.aiLearningRate
+      );
+    }
     this.resetVehicleToFlightState();
     this.snapCameraToCurrentSubject();
   }
 
   setControlMode(mode: ControlMode): void {
     this.flightController.setControlMode(mode);
+    if (mode === "ai_ppo" && this.aiMode === "idle") {
+      this.aiMode = "eval";
+    } else if (mode !== "ai_ppo" && (this.aiMode === "live_train" || this.aiMode === "eval")) {
+      this.aiMode = "idle";
+      this.liveEpActive = false;
+    }
+  }
+
+  // --- Milestone 2: Neural AI (PPO) Controls ---
+
+  startLiveTrain(): void {
+    this.workerClient.pause();
+    this.aiLastError = null;
+    this.aiMode = "live_train";
+    this.flightController.setControlMode("ai_ppo");
+    this.spawnLive3DRLEpisode();
+  }
+
+  startTurboTrain(): void {
+    this.aiLastError = null;
+    this.liveEpActive = false;
+    this.aiMode = "turbo_train";
+    const mission = this.flightController.getTelemetry().missionMode;
+    this.workerClient.syncWeights(this.liveTrainer.exportCheckpoint());
+    this.workerClient.startTurboTrain(
+      this.currentPlanet.id,
+      mission,
+      this.aiRandomizeSpawn,
+      this.aiLearningRate
+    );
+  }
+
+  pauseAI(): void {
+    if (this.aiMode === "turbo_train") {
+      this.workerClient.pause();
+    }
+    this.aiMode = "idle";
+    this.liveEpActive = false;
+  }
+
+  startAIEval(): void {
+    if (this.aiMode === "turbo_train") {
+      this.workerClient.pause();
+    }
+    this.aiLastError = null;
+    this.aiMode = "eval";
+    this.flightController.setControlMode("ai_ppo");
+    this.spawnLive3DRLEpisode();
+  }
+
+  runWarmStartAndPPO(): void {
+    this.aiLastError = null;
+    const mission = this.flightController.getTelemetry().missionMode;
+    this.liveTrainer.setEnvConfig(this.currentPlanet.id, mission, this.aiRandomizeSpawn);
+    this.liveTrainer.warmStartFromGuidance(12, 8);
+    this.aiMetrics = this.liveTrainer.getLastMetrics();
+    this.workerClient.syncWeights(this.liveTrainer.exportCheckpoint());
+    this.startTurboTrain();
+  }
+
+  resetAIWeights(): void {
+    this.aiLastError = null;
+    this.liveEpActive = false;
+    this.liveTrainer.resetWeights(42);
+    this.aiMetrics = this.liveTrainer.getLastMetrics();
+    this.aiHistory = [];
+    this.workerClient.resetWeights(42);
+    if (this.aiMode === "turbo_train") {
+      this.aiMode = "idle";
+    }
+    this.emitTelemetryNow();
+  }
+
+  setAILearningRate(lr: number): void {
+    this.aiLearningRate = lr;
+    this.liveTrainer.setLearningRate(lr);
+    if (this.aiMode === "turbo_train") {
+      this.startTurboTrain();
+    }
+  }
+
+  setDomainRandomization(enabled: boolean): void {
+    this.aiRandomizeSpawn = enabled;
+    const mission = this.flightController.getTelemetry().missionMode;
+    this.liveTrainer.setEnvConfig(this.currentPlanet.id, mission, enabled);
+    if (this.aiMode === "turbo_train") {
+      this.startTurboTrain();
+    }
+  }
+
+  exportPolicyCheckpoint(): PolicyCheckpoint {
+    return this.liveTrainer.exportCheckpoint();
+  }
+
+  importPolicyCheckpoint(json: string): void {
+    try {
+      const cp = this.liveTrainer.loadCheckpoint(json);
+      this.aiLastError = null;
+      this.aiMetrics = {
+        ...this.liveTrainer.getLastMetrics(),
+        totalSteps: cp.totalSteps,
+        episodesCompleted: cp.episodesCompleted,
+      };
+      this.workerClient.loadCheckpoint(cp);
+      this.emitTelemetryNow();
+    } catch (err) {
+      this.aiLastError = err instanceof Error ? err.message : "Invalid checkpoint JSON";
+      this.emitTelemetryNow();
+    }
+  }
+
+  getAIStatus(): AIStatusSnapshot {
+    return {
+      mode: this.aiMode,
+      learningRate: this.aiLearningRate,
+      randomizeSpawn: this.aiRandomizeSpawn,
+      metrics: this.aiMetrics,
+      outputs: { ...this.aiLastOutputs },
+      lastError: this.aiLastError,
+    };
+  }
+
+  getLastAIActivations(): ActivationSnapshot | null {
+    return this.aiLastActivations;
+  }
+
+  getAIMetrics(): TrainingMetrics {
+    return this.aiMetrics;
+  }
+
+  getTrainingHistory(): readonly TrainingMetrics[] {
+    return this.aiHistory;
+  }
+
+  private spawnLive3DRLEpisode(): void {
+    const mission = this.flightController.getTelemetry().missionMode;
+    this.flightController.setControlMode("ai_ppo");
+    applyRLSpawnToController(
+      this.flightController,
+      this.currentPlanet.id,
+      mission,
+      this.aiRandomizeSpawn,
+      this.aiPrng
+    );
+    this.resetVehicleToFlightState();
+    this.snapCameraToCurrentSubject();
+
+    this.liveEpActive = true;
+    this.liveEpSteps = 0;
+    this.liveEpReturn = 0;
+    this.liveResetWaitTimer = 0;
+    this.aiDecisionTimer = RL_CONTROL_DT; // Trigger immediate first inference
+    this.livePrevTel = this.flightController.getTelemetry();
+    this.liveLastObs = null;
+  }
+
+  private stepLiveAIControl(dt: number, currentTel: FlightTelemetry): void {
+    if (currentTel.controlMode !== "ai_ppo" || !currentTel.running || currentTel.paused) {
+      return;
+    }
+
+    this.aiDecisionTimer += dt;
+    if (this.aiDecisionTimer < RL_CONTROL_DT) {
+      return;
+    }
+    this.aiDecisionTimer -= RL_CONTROL_DT;
+
+    const obs = extractObservation(currentTel, new Float32Array(OBS_DIM));
+    const deterministic = this.aiMode !== "live_train";
+
+    // Record previous transition in Live 3D Train mode
+    if (
+      this.aiMode === "live_train" &&
+      this.liveEpActive &&
+      this.liveLastObs &&
+      this.livePrevTel
+    ) {
+      const stepRew = computeStepReward(this.livePrevTel, currentTel, false);
+      this.liveEpReturn += stepRew.totalReward;
+      this.liveEpSteps += 1;
+      const updated = this.liveTrainer.recordExternalTransition(
+        this.liveLastObs,
+        this.liveLastRawAction,
+        this.liveLastLogProb,
+        stepRew.totalReward,
+        this.liveLastValue,
+        false
+      );
+      if (updated) {
+        this.aiMetrics = updated;
+        this.aiHistory = [...this.liveTrainer.getHistory().slice(-60)];
+      }
+      this.livePrevTel = currentTel;
+    }
+
+    const snap = this.liveTrainer.policy.forwardWithActivations(obs);
+    this.aiLastActivations = snap;
+
+    const sampled = this.liveTrainer.policy.sampleAction(
+      obs,
+      this.aiPrng,
+      deterministic,
+      this.liveLastRawAction
+    );
+    this.liveLastObs = obs;
+    this.liveLastLogProb = sampled.logProb;
+    this.liveLastValue = sampled.value;
+
+    const mapped = mapRawActionToAIInput(this.liveLastRawAction);
+    this.aiCurrentAction = mapped;
+    this.aiLastOutputs = {
+      throttle: mapped.throttle,
+      pitchCmd: mapped.pitchCmd,
+      yawCmd: mapped.yawCmd,
+      value: snap.value,
+    };
+  }
+
+  private handleLiveTrainPostPhysics(dt: number, nextTel: FlightTelemetry): void {
+    if (this.aiMode !== "live_train") {
+      return;
+    }
+
+    if (this.liveResetWaitTimer > 0) {
+      this.liveResetWaitTimer -= dt;
+      if (this.liveResetWaitTimer <= 0) {
+        this.spawnLive3DRLEpisode();
+      }
+      return;
+    }
+
+    if (!this.liveEpActive || !this.livePrevTel || !this.liveLastObs) {
+      return;
+    }
+
+    const outOfBounds = isRLOutOfBounds(nextTel);
+    const terminalPhase =
+      nextTel.phase === "TOUCHDOWN" ||
+      nextTel.phase === "CRASHED" ||
+      nextTel.phase === "COMPLETE";
+    const maxSteps = nextTel.missionMode === "landing" ? 400 : 500;
+    const timedOut = this.liveEpSteps >= maxSteps;
+
+    if (terminalPhase || outOfBounds || timedOut) {
+      const termRew = computeStepReward(this.livePrevTel, nextTel, outOfBounds);
+      this.liveEpReturn += termRew.totalReward;
+      const success =
+        nextTel.missionMode === "landing"
+          ? nextTel.phase === "TOUCHDOWN" && nextTel.landingVerdict === "NOMINAL LANDING"
+          : nextTel.phase === "COMPLETE";
+      const crashed = nextTel.phase === "CRASHED";
+
+      const updated = this.liveTrainer.recordExternalTransition(
+        this.liveLastObs,
+        this.liveLastRawAction,
+        this.liveLastLogProb,
+        termRew.totalReward,
+        this.liveLastValue,
+        true,
+        {
+          episodeReturn: this.liveEpReturn,
+          success,
+          crashed,
+          touchdownVy: nextTel.touchdownVerticalSpeedMps,
+        }
+      );
+      if (updated) {
+        this.aiMetrics = updated;
+        this.aiHistory = [...this.liveTrainer.getHistory().slice(-60)];
+      } else {
+        this.aiMetrics = {
+          ...this.aiMetrics,
+          episodesCompleted: this.liveTrainer.episodesCompleted,
+          totalSteps: this.liveTrainer.totalSteps,
+          lastEpisodeReturn: this.liveEpReturn,
+        };
+      }
+      this.liveEpActive = false;
+      this.liveResetWaitTimer = crashed ? 2.0 : 1.25;
+    }
+  }
+
+  private emitTelemetryNow(): void {
+    this.onTelemetry?.({
+      fps: this.currentFps,
+      rendererName: this.rendererName,
+      drawCalls: this.renderer.info.render.calls,
+      triangles: this.renderer.info.render.triangles,
+      quality: this.quality,
+      flight: this.flightController.getTelemetry(),
+      ai: this.getAIStatus(),
+    });
   }
 
   toggleSas(): boolean {
@@ -407,6 +825,14 @@ export class SceneManager {
   }
 
   startMission(): void {
+    const tel = this.flightController.getTelemetry();
+    if (tel.controlMode === "ai_ppo") {
+      if (this.aiMode === "idle") {
+        this.aiMode = "eval";
+      }
+      this.spawnLive3DRLEpisode();
+      return;
+    }
     this.flightController.startMission();
   }
 
@@ -423,8 +849,16 @@ export class SceneManager {
   }
 
   resetMission(): void {
-    const mode = this.flightController.getTelemetry().missionMode;
-    this.flightController.reset(this.currentPlanet.id, this.launchComplex.getPadDeckY(), mode);
+    const tel = this.flightController.getTelemetry();
+    if (tel.controlMode === "ai_ppo" && (this.aiMode === "live_train" || this.aiMode === "eval")) {
+      this.spawnLive3DRLEpisode();
+      return;
+    }
+    this.flightController.reset(
+      this.currentPlanet.id,
+      this.launchComplex.getPadDeckY(),
+      tel.missionMode
+    );
     this.resetVehicleToFlightState();
     this.snapCameraToCurrentSubject();
   }
@@ -523,8 +957,15 @@ export class SceneManager {
     this.lastFrameTime = now;
     this.elapsedSec += dt;
 
-    const tel = this.flightController.update(dt, this.manualInput);
+    const preTel = this.flightController.getTelemetry();
+    this.stepLiveAIControl(dt, preTel);
+    const tel = this.flightController.update(
+      dt,
+      this.manualInput,
+      preTel.controlMode === "ai_ppo" ? this.aiCurrentAction : undefined
+    );
     this.manualInput.throttleSet = null;
+    this.handleLiveTrainPostPhysics(dt, tel);
 
     this.syncVisualsFromTelemetry(tel);
     this.propulsionEffects.update(dt, tel, this.vehicleIntact);
@@ -591,19 +1032,13 @@ export class SceneManager {
       this.currentFps = Math.round(this.fpsFrameCount / this.fpsAccumTime);
       this.fpsAccumTime = 0;
       this.fpsFrameCount = 0;
-      this.onTelemetry?.({
-        fps: this.currentFps,
-        rendererName: this.rendererName,
-        drawCalls: this.renderer.info.render.calls,
-        triangles: this.renderer.info.render.triangles,
-        quality: this.quality,
-        flight: tel,
-      });
+      this.emitTelemetryNow();
     }
   };
 
   dispose(): void {
     this.disposed = true;
+    this.workerClient.dispose();
     window.cancelAnimationFrame(this.rafId);
     window.removeEventListener("resize", this.handleResize);
     gsap.killTweensOf(this.camera.position);
