@@ -24,6 +24,7 @@ function installDevCspHeaders() {
   const devCsp =
     "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; " +
     "script-src 'self' 'unsafe-inline' http://127.0.0.1:5173; " +
+    "worker-src 'self' blob: http://127.0.0.1:5173; " +
     "style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data: blob:; " +
     "font-src 'self' data:; " +

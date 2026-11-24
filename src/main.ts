@@ -1,7 +1,13 @@
 import "./style.css";
+import type { PolicyCheckpoint } from "./ai/NeuralNetwork";
 import { PLANET_ORDER, type PlanetConfig, type PlanetId, getPlanetConfig } from "./config/planets";
 import type { QualityPreset } from "./effects/PropulsionEffects";
-import { type CameraFocusMode, SceneManager, type SceneTelemetry } from "./scene/SceneManager";
+import {
+  type AIStatusSnapshot,
+  type CameraFocusMode,
+  SceneManager,
+  type SceneTelemetry,
+} from "./scene/SceneManager";
 import type { ControlMode, FlightTelemetry, MissionMode } from "./sim/FlightController";
 
 function createElement<K extends keyof HTMLElementTagNameMap>(
@@ -44,6 +50,16 @@ function buildHud(
     onToggleFocus: () => void;
     onResetCamera: () => void;
     onSelectQuality: (q: QualityPreset) => void;
+    onStartLiveTrain: () => void;
+    onStartTurboTrain: () => void;
+    onPauseAI: () => void;
+    onStartAIEval: () => void;
+    onWarmStartPPO: () => void;
+    onResetAIWeights: () => void;
+    onSelectLR: (lr: number) => void;
+    onToggleRandomize: () => void;
+    onExportCheckpoint: () => PolicyCheckpoint;
+    onImportCheckpoint: (json: string) => void;
   }
 ) {
   const topRow = createElement("div", "hud-top-row");
@@ -53,7 +69,7 @@ function buildHud(
   const brandRow = createElement("div", "brand-row");
   brandRow.append(
     createElement("span", "brand-title", "AETHERSIM"),
-    createElement("span", "brand-stage", "Stage 3 · FX & RUD Physics")
+    createElement("span", "brand-stage", "v0.4.0 · Neural PPO AI")
   );
 
   const planetRow = createElement("div", "seg-row seg-3");
@@ -77,16 +93,16 @@ function buildHud(
   modeRow.append(launchBtn, landingBtn);
 
   const ctrlRow = createElement("div", "seg-row seg-3");
-  const autoBtn = createElement("button", "seg-btn", "AUTOPILOT");
+  const aiBtn = createElement("button", "seg-btn", "AI (PPO)");
+  aiBtn.type = "button";
+  aiBtn.addEventListener("click", () => actions.onSelectControlMode("ai_ppo"));
+  const autoBtn = createElement("button", "seg-btn", "PID AUTO");
   autoBtn.type = "button";
   autoBtn.addEventListener("click", () => actions.onSelectControlMode("autopilot"));
   const manualBtn = createElement("button", "seg-btn", "MANUAL");
   manualBtn.type = "button";
   manualBtn.addEventListener("click", () => actions.onSelectControlMode("manual"));
-  const sasBtn = createElement("button", "seg-btn", "SAS: ON [T]");
-  sasBtn.type = "button";
-  sasBtn.addEventListener("click", actions.onToggleSas);
-  ctrlRow.append(autoBtn, manualBtn, sasBtn);
+  ctrlRow.append(aiBtn, autoBtn, manualBtn);
 
   const actionRow = createElement("div", "action-row");
   const startBtn = createElement("button", "action-btn primary", "START [Space]");
@@ -105,11 +121,15 @@ function buildHud(
   resetBtn.type = "button";
   resetBtn.addEventListener("click", actions.onReset);
 
+  const sasBtn = createElement("button", "action-btn", "SAS: ON [T]");
+  sasBtn.type = "button";
+  sasBtn.addEventListener("click", actions.onToggleSas);
+
   const focusBtn = createElement("button", "action-btn", "FOCUS: ROCKET");
   focusBtn.type = "button";
   focusBtn.addEventListener("click", actions.onToggleFocus);
 
-  actionRow.append(startBtn, pauseBtn, sepBtn, resetBtn, focusBtn);
+  actionRow.append(startBtn, pauseBtn, sepBtn, resetBtn, sasBtn, focusBtn);
 
   const subtitleEl = createElement("div", "planet-subtitle");
   const physGrid = createElement("div", "telemetry-grid");
@@ -127,7 +147,9 @@ function buildHud(
 
   topLeft.append(brandRow, planetRow, modeRow, ctrlRow, actionRow, subtitleEl, physGrid);
 
-  // --- Top-Right Flight Telemetry Card ---
+  // --- Right Column: Flight Telemetry + Collapsible Neural AI (PPO) Drawer ---
+  const rightCol = createElement("div", "hud-right-col");
+
   const topRight = createElement("section", "hud-card hud-top-right");
   const badgeRow = createElement("div", "badge-row");
   const phaseBadge = createElement("span", "phase-badge", "PRELAUNCH");
@@ -179,7 +201,151 @@ function buildHud(
   manualHint.style.display = "none";
 
   topRight.append(badgeRow, flightGrid, fuelBars, bannerEl, manualHint);
-  topRow.append(topLeft, topRight);
+
+  // --- Collapsible Neural AI (PPO) Drawer ---
+  const aiDrawer = createElement("section", "hud-card hud-ai-drawer");
+  const aiHeader = createElement("div", "ai-header");
+  const aiTitleWrap = createElement("div", "ai-title-wrap");
+  aiTitleWrap.append(createElement("span", "brand-title", "NEURAL AI (PPO)"));
+  const aiStatePill = createElement("span", "ai-state-pill", "IDLE");
+  aiTitleWrap.append(aiStatePill);
+
+  let aiExpanded = true;
+  const aiCollapseBtn = createElement("button", "action-btn", "▾");
+  aiCollapseBtn.type = "button";
+  aiHeader.append(aiTitleWrap, aiCollapseBtn);
+
+  const aiBody = createElement("div", "ai-body");
+  aiCollapseBtn.addEventListener("click", () => {
+    aiExpanded = !aiExpanded;
+    aiBody.style.display = aiExpanded ? "flex" : "none";
+    aiCollapseBtn.textContent = aiExpanded ? "▾" : "▸";
+  });
+
+  const aiBtnGrid = createElement("div", "ai-btn-grid");
+  const liveTrainBtn = createElement("button", "action-btn primary", "LIVE TRAIN (3D)");
+  liveTrainBtn.type = "button";
+  liveTrainBtn.addEventListener("click", actions.onStartLiveTrain);
+
+  const turboTrainBtn = createElement("button", "action-btn primary", "TURBO TRAIN");
+  turboTrainBtn.type = "button";
+  turboTrainBtn.addEventListener("click", actions.onStartTurboTrain);
+
+  const aiPauseBtn = createElement("button", "action-btn", "PAUSE AI");
+  aiPauseBtn.type = "button";
+  aiPauseBtn.addEventListener("click", actions.onPauseAI);
+
+  const aiEvalBtn = createElement("button", "action-btn", "EVAL (DET)");
+  aiEvalBtn.type = "button";
+  aiEvalBtn.addEventListener("click", actions.onStartAIEval);
+
+  const warmStartBtn = createElement("button", "action-btn", "WARM-START");
+  warmStartBtn.type = "button";
+  warmStartBtn.addEventListener("click", actions.onWarmStartPPO);
+
+  const resetWeightsBtn = createElement("button", "action-btn", "RESET WTS");
+  resetWeightsBtn.type = "button";
+  resetWeightsBtn.addEventListener("click", actions.onResetAIWeights);
+
+  aiBtnGrid.append(
+    liveTrainBtn,
+    turboTrainBtn,
+    aiPauseBtn,
+    aiEvalBtn,
+    warmStartBtn,
+    resetWeightsBtn
+  );
+
+  const aiParamRow = createElement("div", "ai-param-row");
+  const lrGroup = createElement("div", "quality-group");
+  lrGroup.append(createElement("span", "status-pill", "LR"));
+  const lrOptions = [3e-4, 6e-4, 1e-3];
+  const lrBtns = new Map<number, HTMLButtonElement>();
+  for (const lr of lrOptions) {
+    const label = lr === 3e-4 ? "3e-4" : lr === 6e-4 ? "6e-4" : "1e-3";
+    const b = createElement("button", "quality-btn", label);
+    b.type = "button";
+    b.addEventListener("click", () => actions.onSelectLR(lr));
+    lrGroup.append(b);
+    lrBtns.set(lr, b);
+  }
+
+  const randBtn = createElement("button", "action-btn active", "RAND: ON");
+  randBtn.type = "button";
+  randBtn.addEventListener("click", actions.onToggleRandomize);
+
+  const saveCkptBtn = createElement("button", "action-btn", "SAVE .JSON");
+  saveCkptBtn.type = "button";
+  saveCkptBtn.addEventListener("click", () => {
+    const cp = actions.onExportCheckpoint();
+    const blob = new Blob([JSON.stringify(cp, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `aethersim-ppo-${cp.planet}-${cp.mission}-ep${cp.episodesCompleted}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = ".json,application/json";
+  fileInput.style.display = "none";
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) {
+      return;
+    }
+    const text = await file.text();
+    actions.onImportCheckpoint(text);
+    fileInput.value = "";
+  });
+
+  const loadCkptBtn = createElement("button", "action-btn", "LOAD .JSON");
+  loadCkptBtn.type = "button";
+  loadCkptBtn.addEventListener("click", () => fileInput.click());
+
+  aiParamRow.append(lrGroup, randBtn, saveCkptBtn, loadCkptBtn, fileInput);
+
+  const actorStrip = createElement("div", "ai-actor-strip");
+  const actorThrVal = createElement("strong", undefined, "0%");
+  const actorPitchVal = createElement("strong", undefined, "+0.00");
+  const actorYawVal = createElement("strong", undefined, "+0.00");
+  const actorValEst = createElement("strong", undefined, "0.0");
+  actorStrip.append(
+    document.createTextNode("THR "),
+    actorThrVal,
+    document.createTextNode(" P "),
+    actorPitchVal,
+    document.createTextNode(" Y "),
+    actorYawVal,
+    document.createTextNode(" V(s) "),
+    actorValEst
+  );
+
+  const aiMetricsGrid = createElement("div", "ai-metrics-grid");
+  const makeAiField = (label: string): HTMLElement => {
+    const item = createElement("div", "telemetry-item");
+    const val = createElement("span", "telemetry-value", "-");
+    item.append(createElement("span", "telemetry-label", label), val);
+    aiMetricsGrid.append(item);
+    return val;
+  };
+  const aiEpVal = makeAiField("Episodes / Steps");
+  const aiRateVal = makeAiField("Throughput");
+  const aiLastRetVal = makeAiField("Last Return");
+  const aiMeanRetVal = makeAiField("Mean Ret (20)");
+  const aiWinCrashVal = makeAiField("Land% / Crash%");
+  const aiLossVal = makeAiField("Pi / Val Loss");
+
+  const aiErrBanner = createElement("div", "status-banner crash");
+  aiErrBanner.style.display = "none";
+
+  aiBody.append(aiBtnGrid, aiParamRow, actorStrip, aiMetricsGrid, aiErrBanner);
+  aiDrawer.append(aiHeader, aiBody);
+
+  rightCol.append(topRight, aiDrawer);
+  topRow.append(topLeft, rightCol);
 
   // --- Bottom-Left Diagnostics & Quality Card ---
   const bottomLeft = createElement("section", "hud-card hud-bottom-left");
@@ -240,9 +406,59 @@ function buildHud(
     }
   };
 
+  const updateAIReadout = (ai: AIStatusSnapshot): void => {
+    const modeLabel =
+      ai.mode === "live_train"
+        ? "LIVE TRAIN"
+        : ai.mode === "turbo_train"
+          ? "TURBO WORKER"
+          : ai.mode === "eval"
+            ? "EVAL (DET)"
+            : "IDLE";
+    aiStatePill.textContent = modeLabel;
+    aiStatePill.className = `ai-state-pill ${
+      ai.mode === "live_train" || ai.mode === "turbo_train"
+        ? "training"
+        : ai.mode === "eval"
+          ? "eval"
+          : ""
+    }`;
+
+    liveTrainBtn.classList.toggle("active", ai.mode === "live_train");
+    turboTrainBtn.classList.toggle("active", ai.mode === "turbo_train");
+    aiEvalBtn.classList.toggle("active", ai.mode === "eval");
+    randBtn.classList.toggle("active", ai.randomizeSpawn);
+    randBtn.textContent = ai.randomizeSpawn ? "RAND: ON" : "RAND: OFF";
+
+    for (const [lr, btn] of lrBtns.entries()) {
+      btn.classList.toggle("active", Math.abs(ai.learningRate - lr) < 1e-6);
+    }
+
+    actorThrVal.textContent = `${Math.round(ai.outputs.throttle * 100)}%`;
+    actorPitchVal.textContent = `${ai.outputs.pitchCmd >= 0 ? "+" : ""}${ai.outputs.pitchCmd.toFixed(2)}`;
+    actorYawVal.textContent = `${ai.outputs.yawCmd >= 0 ? "+" : ""}${ai.outputs.yawCmd.toFixed(2)}`;
+    actorValEst.textContent = ai.outputs.value.toFixed(1);
+
+    const m = ai.metrics;
+    aiEpVal.textContent = `${m.episodesCompleted} / ${m.totalSteps}`;
+    aiRateVal.textContent = `${m.stepsPerSec} st/s`;
+    aiLastRetVal.textContent = m.lastEpisodeReturn.toFixed(1);
+    aiMeanRetVal.textContent = m.rollingMeanReturn.toFixed(1);
+    aiWinCrashVal.textContent = `${m.landingSuccessRatePct.toFixed(0)}% / ${m.crashRatePct.toFixed(0)}%`;
+    aiLossVal.textContent = `${m.policyLoss.toFixed(3)} / ${m.valueLoss.toFixed(1)}`;
+
+    if (ai.lastError) {
+      aiErrBanner.style.display = "block";
+      aiErrBanner.textContent = `AI ERROR: ${ai.lastError}`;
+    } else {
+      aiErrBanner.style.display = "none";
+    }
+  };
+
   const updateFlightReadout = (tel: FlightTelemetry, focus: CameraFocusMode): void => {
     launchBtn.classList.toggle("active", tel.missionMode === "launch");
     landingBtn.classList.toggle("active", tel.missionMode === "landing");
+    aiBtn.classList.toggle("active", tel.controlMode === "ai_ppo");
     autoBtn.classList.toggle("active", tel.controlMode === "autopilot");
     manualBtn.classList.toggle("active", tel.controlMode === "manual");
     sasBtn.classList.toggle("active", tel.sasEnabled);
@@ -305,11 +521,18 @@ function buildHud(
     gpuStrong.textContent = t.rendererName;
     updateQualityReadout(t.quality);
     updateFlightReadout(t.flight, focus);
+    updateAIReadout(t.ai);
   };
 
   updatePlanetReadout(initialPlanet);
   updateQualityReadout("med");
-  return { updatePlanetReadout, updateFlightReadout, updateQualityReadout, updateTelemetry };
+  return {
+    updatePlanetReadout,
+    updateFlightReadout,
+    updateQualityReadout,
+    updateAIReadout,
+    updateTelemetry,
+  };
 }
 
 function bootstrap(): void {
@@ -338,13 +561,19 @@ function bootstrap(): void {
       isElectron,
       drawCalls: telemetry.drawCalls,
       triangles: telemetry.triangles,
+      aiState: telemetry.ai.mode,
+      aiEpisodes: telemetry.ai.metrics.episodesCompleted,
+      aiTotalSteps: telemetry.ai.metrics.totalSteps,
+      aiMeanReturn: telemetry.ai.metrics.rollingMeanReturn,
     };
   });
 
   const syncNow = (): void => {
     const tel = sceneManager.getFlightTelemetry();
+    const ai = sceneManager.getAIStatus();
     hudApi?.updateFlightReadout(tel, sceneManager.getFocusMode());
     hudApi?.updateQualityReadout(sceneManager.getQualityPreset());
+    hudApi?.updateAIReadout(ai);
     if (window.__STARSHIP_SIM__) {
       window.__STARSHIP_SIM__.planet = tel.planetId;
       window.__STARSHIP_SIM__.missionMode = tel.missionMode;
@@ -353,6 +582,10 @@ function bootstrap(): void {
       window.__STARSHIP_SIM__.quality = sceneManager.getQualityPreset();
       window.__STARSHIP_SIM__.sasEnabled = tel.sasEnabled;
       window.__STARSHIP_SIM__.crashed = tel.phase === "CRASHED";
+      window.__STARSHIP_SIM__.aiState = ai.mode;
+      window.__STARSHIP_SIM__.aiEpisodes = ai.metrics.episodesCompleted;
+      window.__STARSHIP_SIM__.aiTotalSteps = ai.metrics.totalSteps;
+      window.__STARSHIP_SIM__.aiMeanReturn = ai.metrics.rollingMeanReturn;
     }
   };
 
@@ -407,11 +640,49 @@ function bootstrap(): void {
         sceneManager.setQualityPreset(q);
         syncNow();
       },
+      onStartLiveTrain: () => {
+        sceneManager.startLiveTrain();
+        syncNow();
+      },
+      onStartTurboTrain: () => {
+        sceneManager.startTurboTrain();
+        syncNow();
+      },
+      onPauseAI: () => {
+        sceneManager.pauseAI();
+        syncNow();
+      },
+      onStartAIEval: () => {
+        sceneManager.startAIEval();
+        syncNow();
+      },
+      onWarmStartPPO: () => {
+        sceneManager.runWarmStartAndPPO();
+        syncNow();
+      },
+      onResetAIWeights: () => {
+        sceneManager.resetAIWeights();
+        syncNow();
+      },
+      onSelectLR: (lr) => {
+        sceneManager.setAILearningRate(lr);
+        syncNow();
+      },
+      onToggleRandomize: () => {
+        sceneManager.setDomainRandomization(!sceneManager.getAIStatus().randomizeSpawn);
+        syncNow();
+      },
+      onExportCheckpoint: () => sceneManager.exportPolicyCheckpoint(),
+      onImportCheckpoint: (json) => {
+        sceneManager.importPolicyCheckpoint(json);
+        syncNow();
+      },
     }
   );
   syncNow();
 
   const initialTel = sceneManager.getFlightTelemetry();
+  const initialAI = sceneManager.getAIStatus();
   window.__STARSHIP_SIM__ = {
     ready: true,
     planet: sceneManager.getPlanet().id,
@@ -426,6 +697,10 @@ function bootstrap(): void {
     isElectron,
     drawCalls: 0,
     triangles: 0,
+    aiState: initialAI.mode,
+    aiEpisodes: initialAI.metrics.episodesCompleted,
+    aiTotalSteps: initialAI.metrics.totalSteps,
+    aiMeanReturn: initialAI.metrics.rollingMeanReturn,
   };
 
   const keysDown = new Set<string>();

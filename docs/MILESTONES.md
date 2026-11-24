@@ -52,14 +52,24 @@ This document defines the repository's Git workflow and tracks progress across *
 
 ---
 
-### Milestone 2 — Live PPO Neural Network AI Engine & Learning-from-Crashes Sandbox (`v0.4.0`) — **NEXT**
-- **Target Branch:** `milestone/m2-live-ppo-ai`
-- **Planned Scope:**
-  - **Headless Worker Simulation Pool:** Run `FlightController.ts` inside dedicated Web Workers at `1,000+` simulated steps/sec without blocking the Three.js render loop.
-  - **In-App PPO Neural Network Engine:** Train and run Actor-Critic PPO landing/ascent policies live in TypeScript/WebGL or ONNX/TFJS runtime, replacing static autopilot when `AI PILOT` mode is selected.
-  - **Learning-from-Crashes Sandbox:** Record `CrashEvent` failure states and high-penalty trajectories into prioritized replay/curriculum buffers, replaying RUD failures while tracking policy convergence across Mars, Earth, and Moon.
-  - **Ghost Trajectories & Model Checkpoints:** Render translucent 3D predicted/historical ghost paths and save/load trained policy weights cleanly inside user app data.
-- **Exit Criteria:** AI policy achieves statistically significant nominal landing improvement over untrained baseline across all 3 planets in headless batch benchmarks; UI stays responsive during background Worker training.
+### Milestone 2 — Live PPO Neural Network AI Engine & Learning-from-Crashes Sandbox (`v0.4.0`) — **COMPLETE & VERIFIED**
+- **Branch:** `milestone/m2-ppo-neural-ai`
+- **Implemented Scope:**
+  - **Pure TypeScript Continuous PPO Core (`src/ai/`):**
+    - `prng.ts`: Deterministic Mulberry32 PRNG + Box-Muller Gaussian sampling + Fisher-Yates shuffling.
+    - `NeuralNetwork.ts`: Allocation-light `Float32Array` Actor-Critic MLP (`14 -> 64 tanh -> 64 tanh -> 3` + learnable `logStd`, `14 -> 64 tanh -> 64 tanh -> 1` critic) with orthogonal QR initialization, analytical backpropagation, Adam + global L2 gradient norm clipping (`maxGradNorm = 0.5`), `forwardWithActivations(obs)` snapshot hook, and versioned JSON checkpoint `serialize()` / `deserialize()`.
+    - `RLEnvironment.ts`: Deterministic `20 Hz` (`dt = 0.05 s`, `3 × 1/60 s` physics sub-steps) RL environment wrapping `FlightController` across Mars, Earth, and Moon (`landing` & `launch`), 14D normalized observations, 3D continuous action mapping, optional domain randomization, and decomposed `{ distance, velocity, attitude, fuel, terminal }` rewards.
+    - `PPOTrainer.ts`: Flat `RolloutBuffer`, GAE ($\gamma = 0.99, \lambda = 0.95$), clipped surrogate loss ($\epsilon = 0.2$), value loss, entropy bonus, Schulman approx-KL early stopping, optional opt-in Behavioral Cloning `warmStartFromGuidance()`, and `evaluateBatch()`.
+    - `ppoWorker.ts` & `PPOWorkerClient.ts`: Dedicated Vite module Web Worker executing background turbo PPO updates off the WebGL thread (`worker-src 'self' blob:` CSP-enabled).
+  - **Live 3D Integration & Neural AI HUD (`FlightController.ts`, `SceneManager.ts`, `main.ts`, `style.css`):**
+    - Extended control modes to `AI (PPO) | PID AUTO | MANUAL`.
+    - Added collapsible **NEURAL AI (PPO)** drawer with `LIVE TRAIN (3D)` (watch crashes/RUDs and weight updates live episode-by-episode), `TURBO TRAIN`, `PAUSE AI`, `EVAL (DET)`, `WARM-START`, `RESET WTS`, LR selector, `RAND: ON/OFF` domain randomization, `SAVE .JSON` / `LOAD .JSON` checkpoints, live actor outputs, and RL metrics.
+    - Added `getLastAIActivations()` and `getTrainingHistory()` hooks on `SceneManager` for Milestone 3.
+- **Verification Gate Results (`v0.4.0`):**
+  - `npm run test`: **4 test files, 14 tests passed (`0` failures)** (`planets.test.ts`, `noise.test.ts`, `flightController.test.ts`, `ppoAI.test.ts`).
+  - Headless Pure PPO Convergence (`ppoAI.test.ts`, Moon landing, seed `42`, `9,216` steps / `45` episodes): `preMeanReturn = -2346.13` $\rightarrow$ `postMeanReturn = -326.58` (`+2,019.55` improvement) at **`41,164 steps/s`**.
+  - `npm run build`: **`tsc --noEmit && vite build` passed (`0` errors)** with clean Web Worker chunk (`dist/assets/ppoWorker-CXdYjvc7.js`, `51.71 kB`).
+  - `node scripts/launch-desktop.mjs --prod --smoke-test`: **`SMOKE_OK`**, `0` warnings, `0` console/worker errors, `23 FPS`, `1426×779` canvas, `aiState: "idle"`.
 
 ---
 
