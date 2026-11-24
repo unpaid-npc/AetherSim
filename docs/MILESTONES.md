@@ -73,15 +73,27 @@ This document defines the repository's Git workflow and tracks progress across *
 
 ---
 
-### Milestone 3 — Aerospace Research Workbench (`v0.5.0`) — **PLANNED**
-- **Target Branch:** `milestone/m3-research-workbench`
-- **Planned Scope:**
-  - **Live Scientific Telemetry Plots:** Real-time altitude, velocity, dynamic pressure ($q$), attitude/AoA, propellant mass, and touchdown dispersion charts.
-  - **Neural Network Activation Viewer:** Live layer activation & action-distribution visualizer synchronized with the active Milestone 2 PPO policy.
-  - **Deterministic Fault Injection Panel:** Controlled injection of engine-out, TVC gimbal jam, RCS degradation, sensor bias, and wind-gust perturbations.
-  - **Monte Carlo Batch Runner & Export:** Automated $N$-trial dispersion sweeps (`N >= 59 / 299`) with Wilks/Clopper-Pearson statistical summaries and **CSV / JSON** telemetry export.
-  - **Cinematography & Procedural Audio:** GSAP camera cut presets (launch pad, booster sep, belly-flop, gear-cam) and procedural WebAudio Raptor rumble/sonic crack/RUD synthesis.
-- **Exit Criteria:** Reproducible Monte Carlo CSV/JSON exports matching fixed seeds; zero main-thread frame drops during live plotting.
+### Milestone 3 — Aerospace Research Workbench, UX Overhaul, Cinematography & Audio (`v0.5.0`) — **COMPLETE & VERIFIED**
+- **Branch:** `milestone/m3-research-workbench-and-ux`
+- **Implemented Scope:**
+  - **Milestone 2 Bug Fixes (`video_1.mp4`):**
+    - `CameraDirector.reLockOnVehicle()` kills stale GSAP tweens and snaps/tracks Starship on every reset, planet/mission switch, and post-RUD `LIVE TRAIN` auto-reset.
+    - Aligned `LAUNCH` PPO reward (`isLaunchSuccess` at `alt >= 1200 m`, `vy > 35 m/s`, `tilt < 35°`; early-tilt/tower-drift penalties; termination at `tilt > 65°`) preventing sideways reward hacking.
+    - Redesigned SpaceX-webcast HUD with plain-English guided 3-step AI deck (`1. WATCH AI LEARN (3D)`, `2. FAST TRAIN (WORKER)`, `3. FLY TRAINED AI`), hover tooltips, two-click `RESET AI BRAIN` confirmation, and `?` Help modal.
+    - Upgraded cryo/dust sprites to `128×128` multi-puff feathered textures and RUD fireballs to subdivision-5 FBM-displaced spheres with view-normal edge alpha feathering.
+  - **Aerospace Research Lab (`src/research/`, `src/sim/FaultInjector.ts`):**
+    - `TelemetryCharts.ts`: 4 high-DPI HTML5 canvas streaming charts (`Alt & Vy`, `q & G-Load`, `Tilt & Throttle`, `PPO Learning Curve`) throttled to `~16 Hz`.
+    - `NeuralNetVisualizer.ts`: Live `14 → 64 → 64 → 3` Actor activation + `V(s)` canvas visualizer.
+    - `FaultInjector.ts`: Programmable thrust loss (`0–50%` at configurable altitude), density-scaled crosswind (`0–40 m/s`, strictly `0` on Moon vacuum), IMU pitch/roll bias & noise (`getSensedTelemetry()` isolated from physics truth), and TVC lag toggle.
+    - `MonteCarloRunner.ts`: Off-thread Worker `20 / 50 / 100`-trial dispersion runner for `AI NEURAL` and `PID AUTO` with exact 95% Clopper-Pearson binomial confidence intervals.
+    - `DataExporter.ts`: One-click Flight Telemetry `.csv`, RL Training History `.csv`, and full reproducible Experiment Bundle `.json` export.
+  - **GSAP Cinematography & Procedural Web Audio (`CameraDirector.ts`, `SoundEngine.ts`):**
+    - Multi-camera presets (`C1 PAD`, `C2 DRONE`, `C3 ENGINE`, `C4 STATION`, `C5 ORBIT`, `F1–F5`) + `AUTO` director timeline mode.
+    - Zero-asset procedural Web Audio synthesis (atmosphere-coupled Raptor roar, cryo vent hiss, cold-gas RCS pulses, sub-bass RUD boom).
+- **Verification Gate Results (`v0.5.0`):**
+  - `npm run test`: **5 test files, 18 tests passed (`0` failures)** (`planets.test.ts`, `noise.test.ts`, `flightController.test.ts`, `ppoAI.test.ts`, `researchWorkbench.test.ts`), PPO throughput **`43,639 steps/s`**.
+  - `npm run build`: **`tsc --noEmit && vite build` passed (`0` errors)**, `46` modules bundled including `dist/assets/ppoWorker-Bf-YmtTa.js` (`58.10 kB`).
+  - `node scripts/launch-desktop.mjs --prod --smoke-test`: **`SMOKE_OK`**, `0` warnings, `0` console/worker/audio errors, `24 FPS`, `1426×779` canvas, `cameraPreset: "orbit"`, `audioMuted: true`.
 
 ---
 

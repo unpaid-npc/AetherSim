@@ -1,4 +1,10 @@
 import type { PlanetId } from "../config/planets";
+import {
+  type MonteCarloPilot,
+  type MonteCarloSummary,
+  runMonteCarloEvaluation,
+} from "../research/MonteCarloRunner";
+import type { FaultConfig } from "../sim/FaultInjector";
 import type { MissionMode } from "../sim/FlightController";
 import type { PolicyCheckpoint } from "./NeuralNetwork";
 import { type EvalBatchSummary, PPOTrainer, type TrainingMetrics } from "./PPOTrainer";
@@ -10,6 +16,7 @@ export type WorkerInboundMessage =
       missionMode: MissionMode;
       randomizeSpawn: boolean;
       learningRate: number;
+      faultConfig?: FaultConfig;
       seed?: number;
     }
   | {
@@ -18,6 +25,7 @@ export type WorkerInboundMessage =
       missionMode: MissionMode;
       randomizeSpawn: boolean;
       learningRate: number;
+      faultConfig?: FaultConfig;
       maxUpdates?: number;
     }
   | { type: "PAUSE_TRAIN" }
@@ -31,6 +39,15 @@ export type WorkerInboundMessage =
       type: "EVALUATE_BATCH";
       episodes?: number;
       deterministic?: boolean;
+    }
+  | {
+      type: "RUN_MONTE_CARLO";
+      episodes: number;
+      pilot: MonteCarloPilot;
+      planetId: PlanetId;
+      missionMode: MissionMode;
+      faultConfig?: FaultConfig;
+      seed?: number;
     }
   | {
       type: "SYNC_WEIGHTS";
@@ -67,6 +84,10 @@ export type WorkerOutboundMessage =
   | {
       type: "EVAL_RESULT";
       summary: EvalBatchSummary;
+    }
+  | {
+      type: "MONTE_CARLO_RESULT";
+      summary: MonteCarloSummary;
     }
   | {
       type: "CHECKPOINT_EXPORT";
@@ -168,7 +189,12 @@ workerScope.onmessage = (ev) => {
           msg.learningRate,
           msg.seed ?? 42
         );
-        t.setEnvConfig(msg.planetId, msg.missionMode, msg.randomizeSpawn);
+        t.setEnvConfig(
+          msg.planetId,
+          msg.missionMode,
+          msg.randomizeSpawn,
+          msg.faultConfig
+        );
         t.setLearningRate(msg.learningRate);
         workerScope.postMessage({
           type: "READY",
@@ -184,7 +210,12 @@ workerScope.onmessage = (ev) => {
           msg.randomizeSpawn,
           msg.learningRate
         );
-        t.setEnvConfig(msg.planetId, msg.missionMode, msg.randomizeSpawn);
+        t.setEnvConfig(
+          msg.planetId,
+          msg.missionMode,
+          msg.randomizeSpawn,
+          msg.faultConfig
+        );
         t.setLearningRate(msg.learningRate);
         remainingUpdates =
           msg.maxUpdates && msg.maxUpdates > 0 ? msg.maxUpdates : Number.POSITIVE_INFINITY;
@@ -237,6 +268,20 @@ workerScope.onmessage = (ev) => {
         const t = ensureTrainer();
         const summary = t.evaluateBatch(msg.episodes ?? 10, msg.deterministic ?? true);
         workerScope.postMessage({ type: "EVAL_RESULT", summary });
+        break;
+      }
+      case "RUN_MONTE_CARLO": {
+        const t = ensureTrainer(msg.planetId, msg.missionMode, true, 6e-4);
+        const summary = runMonteCarloEvaluation({
+          episodes: msg.episodes,
+          pilot: msg.pilot,
+          planetId: msg.planetId,
+          missionMode: msg.missionMode,
+          faultConfig: msg.faultConfig,
+          checkpoint: msg.pilot === "ai_ppo" ? t.exportCheckpoint() : undefined,
+          seed: msg.seed ?? 2026,
+        });
+        workerScope.postMessage({ type: "MONTE_CARLO_RESULT", summary });
         break;
       }
       case "SYNC_WEIGHTS":

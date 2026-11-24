@@ -8,6 +8,8 @@ import {
   OBS_DIM,
   RLEnvironment,
   type RLEnvConfig,
+  isLandingSuccess,
+  isLaunchSuccess,
 } from "./RLEnvironment";
 
 export interface PPOConfig {
@@ -216,8 +218,13 @@ export class PPOTrainer {
     this.config.learningRate = clamp(lr, 1e-5, 1e-2);
   }
 
-  setEnvConfig(planetId: RLEnvConfig["planetId"], missionMode: RLEnvConfig["missionMode"], randomizeSpawn: boolean): void {
-    this.env.setPlanetAndMission(planetId, missionMode, randomizeSpawn);
+  setEnvConfig(
+    planetId: RLEnvConfig["planetId"],
+    missionMode: RLEnvConfig["missionMode"],
+    randomizeSpawn: boolean,
+    faultConfig?: RLEnvConfig["faultConfig"]
+  ): void {
+    this.env.setPlanetAndMission(planetId, missionMode, randomizeSpawn, faultConfig);
     this.envInitialized = false;
   }
 
@@ -297,8 +304,8 @@ export class PPOTrainer {
         const tel = res.telemetry;
         const success =
           tel.missionMode === "landing"
-            ? tel.phase === "TOUCHDOWN" && tel.landingVerdict === "NOMINAL LANDING"
-            : tel.phase === "COMPLETE";
+            ? isLandingSuccess(tel)
+            : isLaunchSuccess(tel);
         const crashed = tel.phase === "CRASHED";
         this.recordEpisodeOutcome(
           this.currentEpReturn,
