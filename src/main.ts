@@ -1,28 +1,36 @@
 import "./style.css";
 import type { PolicyCheckpoint } from "./ai/NeuralNetwork";
-import { PLANET_ORDER, type PlanetConfig, type PlanetId, getPlanetConfig } from "./config/planets";
+import { PLANET_ORDER, type PlanetId, getPlanetConfig } from "./config/planets";
 import type { QualityPreset } from "./effects/PropulsionEffects";
 import {
-  type AIStatusSnapshot,
-  type CameraFocusMode,
+  buildExperimentBundleJSON,
+  formatFlightTelemetryCSV,
+  formatTrainingHistoryCSV,
+  triggerBrowserDownload,
+} from "./research/DataExporter";
+import type { MonteCarloPilot, MonteCarloSummary } from "./research/MonteCarloRunner";
+import { NeuralNetVisualizer } from "./research/NeuralNetVisualizer";
+import { TelemetryCharts } from "./research/TelemetryCharts";
+import {
+  type CameraPreset,
   SceneManager,
   type SceneTelemetry,
 } from "./scene/SceneManager";
-import type { ControlMode, FlightTelemetry, MissionMode } from "./sim/FlightController";
+import type { FaultConfig } from "./sim/FaultInjector";
 
-function createElement<K extends keyof HTMLElementTagNameMap>(
+type ResearchTab = "plots" | "nn" | "faults" | "mc" | "export";
+
+function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string,
-  text?: string
+  text?: string,
+  tooltip?: string
 ): HTMLElementTagNameMap[K] {
-  const el = document.createElement(tag);
-  if (className) {
-    el.className = className;
-  }
-  if (text !== undefined) {
-    el.textContent = text;
-  }
-  return el;
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  if (tooltip) node.title = tooltip;
+  return node;
 }
 
 function formatTClock(tSec: number): string {
@@ -33,508 +41,6 @@ function formatTClock(tSec: number): string {
   return `T${sign}${String(mins).padStart(2, "0")}:${secs.toFixed(1).padStart(4, "0")}`;
 }
 
-function buildHud(
-  root: HTMLElement,
-  initialPlanet: PlanetConfig,
-  rendererName: string,
-  isElectron: boolean,
-  actions: {
-    onSelectPlanet: (id: PlanetId) => void;
-    onSelectMissionMode: (mode: MissionMode) => void;
-    onSelectControlMode: (mode: ControlMode) => void;
-    onToggleSas: () => void;
-    onStart: () => void;
-    onPause: () => void;
-    onStageSep: () => void;
-    onReset: () => void;
-    onToggleFocus: () => void;
-    onResetCamera: () => void;
-    onSelectQuality: (q: QualityPreset) => void;
-    onStartLiveTrain: () => void;
-    onStartTurboTrain: () => void;
-    onPauseAI: () => void;
-    onStartAIEval: () => void;
-    onWarmStartPPO: () => void;
-    onResetAIWeights: () => void;
-    onSelectLR: (lr: number) => void;
-    onToggleRandomize: () => void;
-    onExportCheckpoint: () => PolicyCheckpoint;
-    onImportCheckpoint: (json: string) => void;
-  }
-) {
-  const topRow = createElement("div", "hud-top-row");
-
-  // --- Top-Left Control & Planet Card ---
-  const topLeft = createElement("section", "hud-card hud-top-left");
-  const brandRow = createElement("div", "brand-row");
-  brandRow.append(
-    createElement("span", "brand-title", "AETHERSIM"),
-    createElement("span", "brand-stage", "v0.4.0 · Neural PPO AI")
-  );
-
-  const planetRow = createElement("div", "seg-row seg-3");
-  const planetBtns = new Map<PlanetId, HTMLButtonElement>();
-  PLANET_ORDER.forEach((id, idx) => {
-    const cfg = getPlanetConfig(id);
-    const btn = createElement("button", "seg-btn", `${idx + 1} · ${cfg.name}`);
-    btn.type = "button";
-    btn.addEventListener("click", () => actions.onSelectPlanet(id));
-    planetRow.append(btn);
-    planetBtns.set(id, btn);
-  });
-
-  const modeRow = createElement("div", "seg-row seg-2");
-  const launchBtn = createElement("button", "seg-btn", "LAUNCH");
-  launchBtn.type = "button";
-  launchBtn.addEventListener("click", () => actions.onSelectMissionMode("launch"));
-  const landingBtn = createElement("button", "seg-btn", "LANDING");
-  landingBtn.type = "button";
-  landingBtn.addEventListener("click", () => actions.onSelectMissionMode("landing"));
-  modeRow.append(launchBtn, landingBtn);
-
-  const ctrlRow = createElement("div", "seg-row seg-3");
-  const aiBtn = createElement("button", "seg-btn", "AI (PPO)");
-  aiBtn.type = "button";
-  aiBtn.addEventListener("click", () => actions.onSelectControlMode("ai_ppo"));
-  const autoBtn = createElement("button", "seg-btn", "PID AUTO");
-  autoBtn.type = "button";
-  autoBtn.addEventListener("click", () => actions.onSelectControlMode("autopilot"));
-  const manualBtn = createElement("button", "seg-btn", "MANUAL");
-  manualBtn.type = "button";
-  manualBtn.addEventListener("click", () => actions.onSelectControlMode("manual"));
-  ctrlRow.append(aiBtn, autoBtn, manualBtn);
-
-  const actionRow = createElement("div", "action-row");
-  const startBtn = createElement("button", "action-btn primary", "START [Space]");
-  startBtn.type = "button";
-  startBtn.addEventListener("click", actions.onStart);
-
-  const pauseBtn = createElement("button", "action-btn", "PAUSE");
-  pauseBtn.type = "button";
-  pauseBtn.addEventListener("click", actions.onPause);
-
-  const sepBtn = createElement("button", "action-btn", "STAGE SEP");
-  sepBtn.type = "button";
-  sepBtn.addEventListener("click", actions.onStageSep);
-
-  const resetBtn = createElement("button", "action-btn", "RESET [R]");
-  resetBtn.type = "button";
-  resetBtn.addEventListener("click", actions.onReset);
-
-  const sasBtn = createElement("button", "action-btn", "SAS: ON [T]");
-  sasBtn.type = "button";
-  sasBtn.addEventListener("click", actions.onToggleSas);
-
-  const focusBtn = createElement("button", "action-btn", "FOCUS: ROCKET");
-  focusBtn.type = "button";
-  focusBtn.addEventListener("click", actions.onToggleFocus);
-
-  actionRow.append(startBtn, pauseBtn, sepBtn, resetBtn, sasBtn, focusBtn);
-
-  const subtitleEl = createElement("div", "planet-subtitle");
-  const physGrid = createElement("div", "telemetry-grid");
-  const makePhysField = (label: string): HTMLElement => {
-    const item = createElement("div", "telemetry-item");
-    const val = createElement("span", "telemetry-value", "-");
-    item.append(createElement("span", "telemetry-label", label), val);
-    physGrid.append(item);
-    return val;
-  };
-  const gravityVal = makePhysField("Surface Gravity");
-  const pressureVal = makePhysField("Surface Pressure");
-  const densityVal = makePhysField("Air Density");
-  const atmosphereVal = makePhysField("Atmosphere");
-
-  topLeft.append(brandRow, planetRow, modeRow, ctrlRow, actionRow, subtitleEl, physGrid);
-
-  // --- Right Column: Flight Telemetry + Collapsible Neural AI (PPO) Drawer ---
-  const rightCol = createElement("div", "hud-right-col");
-
-  const topRight = createElement("section", "hud-card hud-top-right");
-  const badgeRow = createElement("div", "badge-row");
-  const phaseBadge = createElement("span", "phase-badge", "PRELAUNCH");
-  const tClockEl = createElement("span", "tclock-label", "T-00:10.0");
-  badgeRow.append(phaseBadge, tClockEl);
-
-  const flightGrid = createElement("div", "telemetry-grid");
-  const makeFlightField = (label: string): HTMLElement => {
-    const item = createElement("div", "telemetry-item");
-    const val = createElement("span", "telemetry-value", "-");
-    item.append(createElement("span", "telemetry-label", label), val);
-    flightGrid.append(item);
-    return val;
-  };
-  const altVal = makeFlightField("Altitude");
-  const speedVal = makeFlightField("Velocity");
-  const vyVal = makeFlightField("Vertical Speed");
-  const machVal = makeFlightField("Mach / q");
-  const throttleVal = makeFlightField("Throttle");
-  const legsVal = makeFlightField("Legs / Tilt");
-
-  const fuelBars = createElement("div", "fuel-bars");
-  const makeFuelRow = (label: string) => {
-    const row = createElement("div", "fuel-row");
-    const lbl = createElement("span", undefined, label);
-    lbl.style.width = "54px";
-    const track = createElement("div", "fuel-track");
-    const fill = createElement("div", "fuel-fill");
-    fill.style.width = "100%";
-    track.append(fill);
-    const pct = createElement("span", undefined, "100%");
-    pct.style.width = "34px";
-    pct.style.textAlign = "right";
-    row.append(lbl, track, pct);
-    fuelBars.append(row);
-    return { fill, pct };
-  };
-  const boosterFuelBar = makeFuelRow("BOOSTER");
-  const shipFuelBar = makeFuelRow("SHIP");
-
-  const bannerEl = createElement("div", "status-banner");
-  bannerEl.style.display = "none";
-
-  const manualHint = createElement(
-    "div",
-    "manual-hint",
-    "MANUAL: W/Shift +Thr · S/Ctrl -Thr · Z 100% · X 0% · Arrows/IJKL Pitch/Tilt · Q/E Roll · T SAS · G Legs · Space Start/Sep"
-  );
-  manualHint.style.display = "none";
-
-  topRight.append(badgeRow, flightGrid, fuelBars, bannerEl, manualHint);
-
-  // --- Collapsible Neural AI (PPO) Drawer ---
-  const aiDrawer = createElement("section", "hud-card hud-ai-drawer");
-  const aiHeader = createElement("div", "ai-header");
-  const aiTitleWrap = createElement("div", "ai-title-wrap");
-  aiTitleWrap.append(createElement("span", "brand-title", "NEURAL AI (PPO)"));
-  const aiStatePill = createElement("span", "ai-state-pill", "IDLE");
-  aiTitleWrap.append(aiStatePill);
-
-  let aiExpanded = true;
-  const aiCollapseBtn = createElement("button", "action-btn", "▾");
-  aiCollapseBtn.type = "button";
-  aiHeader.append(aiTitleWrap, aiCollapseBtn);
-
-  const aiBody = createElement("div", "ai-body");
-  aiCollapseBtn.addEventListener("click", () => {
-    aiExpanded = !aiExpanded;
-    aiBody.style.display = aiExpanded ? "flex" : "none";
-    aiCollapseBtn.textContent = aiExpanded ? "▾" : "▸";
-  });
-
-  const aiBtnGrid = createElement("div", "ai-btn-grid");
-  const liveTrainBtn = createElement("button", "action-btn primary", "LIVE TRAIN (3D)");
-  liveTrainBtn.type = "button";
-  liveTrainBtn.addEventListener("click", actions.onStartLiveTrain);
-
-  const turboTrainBtn = createElement("button", "action-btn primary", "TURBO TRAIN");
-  turboTrainBtn.type = "button";
-  turboTrainBtn.addEventListener("click", actions.onStartTurboTrain);
-
-  const aiPauseBtn = createElement("button", "action-btn", "PAUSE AI");
-  aiPauseBtn.type = "button";
-  aiPauseBtn.addEventListener("click", actions.onPauseAI);
-
-  const aiEvalBtn = createElement("button", "action-btn", "EVAL (DET)");
-  aiEvalBtn.type = "button";
-  aiEvalBtn.addEventListener("click", actions.onStartAIEval);
-
-  const warmStartBtn = createElement("button", "action-btn", "WARM-START");
-  warmStartBtn.type = "button";
-  warmStartBtn.addEventListener("click", actions.onWarmStartPPO);
-
-  const resetWeightsBtn = createElement("button", "action-btn", "RESET WTS");
-  resetWeightsBtn.type = "button";
-  resetWeightsBtn.addEventListener("click", actions.onResetAIWeights);
-
-  aiBtnGrid.append(
-    liveTrainBtn,
-    turboTrainBtn,
-    aiPauseBtn,
-    aiEvalBtn,
-    warmStartBtn,
-    resetWeightsBtn
-  );
-
-  const aiParamRow = createElement("div", "ai-param-row");
-  const lrGroup = createElement("div", "quality-group");
-  lrGroup.append(createElement("span", "status-pill", "LR"));
-  const lrOptions = [3e-4, 6e-4, 1e-3];
-  const lrBtns = new Map<number, HTMLButtonElement>();
-  for (const lr of lrOptions) {
-    const label = lr === 3e-4 ? "3e-4" : lr === 6e-4 ? "6e-4" : "1e-3";
-    const b = createElement("button", "quality-btn", label);
-    b.type = "button";
-    b.addEventListener("click", () => actions.onSelectLR(lr));
-    lrGroup.append(b);
-    lrBtns.set(lr, b);
-  }
-
-  const randBtn = createElement("button", "action-btn active", "RAND: ON");
-  randBtn.type = "button";
-  randBtn.addEventListener("click", actions.onToggleRandomize);
-
-  const saveCkptBtn = createElement("button", "action-btn", "SAVE .JSON");
-  saveCkptBtn.type = "button";
-  saveCkptBtn.addEventListener("click", () => {
-    const cp = actions.onExportCheckpoint();
-    const blob = new Blob([JSON.stringify(cp, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `aethersim-ppo-${cp.planet}-${cp.mission}-ep${cp.episodesCompleted}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = ".json,application/json";
-  fileInput.style.display = "none";
-  fileInput.addEventListener("change", async () => {
-    const file = fileInput.files?.[0];
-    if (!file) {
-      return;
-    }
-    const text = await file.text();
-    actions.onImportCheckpoint(text);
-    fileInput.value = "";
-  });
-
-  const loadCkptBtn = createElement("button", "action-btn", "LOAD .JSON");
-  loadCkptBtn.type = "button";
-  loadCkptBtn.addEventListener("click", () => fileInput.click());
-
-  aiParamRow.append(lrGroup, randBtn, saveCkptBtn, loadCkptBtn, fileInput);
-
-  const actorStrip = createElement("div", "ai-actor-strip");
-  const actorThrVal = createElement("strong", undefined, "0%");
-  const actorPitchVal = createElement("strong", undefined, "+0.00");
-  const actorYawVal = createElement("strong", undefined, "+0.00");
-  const actorValEst = createElement("strong", undefined, "0.0");
-  actorStrip.append(
-    document.createTextNode("THR "),
-    actorThrVal,
-    document.createTextNode(" P "),
-    actorPitchVal,
-    document.createTextNode(" Y "),
-    actorYawVal,
-    document.createTextNode(" V(s) "),
-    actorValEst
-  );
-
-  const aiMetricsGrid = createElement("div", "ai-metrics-grid");
-  const makeAiField = (label: string): HTMLElement => {
-    const item = createElement("div", "telemetry-item");
-    const val = createElement("span", "telemetry-value", "-");
-    item.append(createElement("span", "telemetry-label", label), val);
-    aiMetricsGrid.append(item);
-    return val;
-  };
-  const aiEpVal = makeAiField("Episodes / Steps");
-  const aiRateVal = makeAiField("Throughput");
-  const aiLastRetVal = makeAiField("Last Return");
-  const aiMeanRetVal = makeAiField("Mean Ret (20)");
-  const aiWinCrashVal = makeAiField("Land% / Crash%");
-  const aiLossVal = makeAiField("Pi / Val Loss");
-
-  const aiErrBanner = createElement("div", "status-banner crash");
-  aiErrBanner.style.display = "none";
-
-  aiBody.append(aiBtnGrid, aiParamRow, actorStrip, aiMetricsGrid, aiErrBanner);
-  aiDrawer.append(aiHeader, aiBody);
-
-  rightCol.append(topRight, aiDrawer);
-  topRow.append(topLeft, rightCol);
-
-  // --- Bottom-Left Diagnostics & Quality Card ---
-  const bottomLeft = createElement("section", "hud-card hud-bottom-left");
-  const fpsPill = createElement("div", "status-pill");
-  const fpsStrong = createElement("strong", undefined, "--");
-  fpsPill.append(document.createTextNode("FPS "), fpsStrong);
-
-  const drawPill = createElement("div", "status-pill");
-  const drawStrong = createElement("strong", undefined, "--");
-  drawPill.append(document.createTextNode("DRAWS "), drawStrong);
-
-  const envPill = createElement("div", "status-pill");
-  envPill.append(
-    document.createTextNode("MODE "),
-    createElement("strong", undefined, isElectron ? "DESKTOP" : "BROWSER")
-  );
-
-  const qualityGroup = createElement("div", "quality-group");
-  qualityGroup.append(createElement("span", "status-pill", "FX"));
-  const qualityBtns = new Map<QualityPreset, HTMLButtonElement>();
-  (["low", "med", "high"] as const).forEach((q) => {
-    const qBtn = createElement("button", "quality-btn", q.toUpperCase());
-    qBtn.type = "button";
-    qBtn.addEventListener("click", () => actions.onSelectQuality(q));
-    qualityGroup.append(qBtn);
-    qualityBtns.set(q, qBtn);
-  });
-
-  const gpuPill = createElement("div", "status-pill");
-  const gpuStrong = createElement("strong", "gpu-label", rendererName);
-  gpuStrong.title = rendererName;
-  gpuPill.append(document.createTextNode("GPU "), gpuStrong);
-
-  const resetCamBtn = createElement("button", "action-btn", "Reset Cam");
-  resetCamBtn.type = "button";
-  resetCamBtn.addEventListener("click", actions.onResetCamera);
-
-  bottomLeft.append(fpsPill, drawPill, envPill, qualityGroup, gpuPill, resetCamBtn);
-  root.append(topRow, bottomLeft);
-
-  const updatePlanetReadout = (cfg: PlanetConfig): void => {
-    for (const [id, btn] of planetBtns.entries()) {
-      btn.classList.toggle("active", id === cfg.id);
-    }
-    subtitleEl.textContent = `${cfg.name} — ${cfg.subtitle}`;
-    gravityVal.textContent = `${cfg.physics.gravityMps2.toFixed(3)} m/s²`;
-    pressureVal.textContent =
-      cfg.physics.surfacePressureBar === 0
-        ? "0.000 bar"
-        : `${cfg.physics.surfacePressureBar.toFixed(5)} bar`;
-    densityVal.textContent = `${cfg.physics.airDensityKgM3.toFixed(3)} kg/m³`;
-    atmosphereVal.textContent = cfg.physics.atmosphereLabel;
-  };
-
-  const updateQualityReadout = (q: QualityPreset): void => {
-    for (const [preset, btn] of qualityBtns.entries()) {
-      btn.classList.toggle("active", preset === q);
-    }
-  };
-
-  const updateAIReadout = (ai: AIStatusSnapshot): void => {
-    const modeLabel =
-      ai.mode === "live_train"
-        ? "LIVE TRAIN"
-        : ai.mode === "turbo_train"
-          ? "TURBO WORKER"
-          : ai.mode === "eval"
-            ? "EVAL (DET)"
-            : "IDLE";
-    aiStatePill.textContent = modeLabel;
-    aiStatePill.className = `ai-state-pill ${
-      ai.mode === "live_train" || ai.mode === "turbo_train"
-        ? "training"
-        : ai.mode === "eval"
-          ? "eval"
-          : ""
-    }`;
-
-    liveTrainBtn.classList.toggle("active", ai.mode === "live_train");
-    turboTrainBtn.classList.toggle("active", ai.mode === "turbo_train");
-    aiEvalBtn.classList.toggle("active", ai.mode === "eval");
-    randBtn.classList.toggle("active", ai.randomizeSpawn);
-    randBtn.textContent = ai.randomizeSpawn ? "RAND: ON" : "RAND: OFF";
-
-    for (const [lr, btn] of lrBtns.entries()) {
-      btn.classList.toggle("active", Math.abs(ai.learningRate - lr) < 1e-6);
-    }
-
-    actorThrVal.textContent = `${Math.round(ai.outputs.throttle * 100)}%`;
-    actorPitchVal.textContent = `${ai.outputs.pitchCmd >= 0 ? "+" : ""}${ai.outputs.pitchCmd.toFixed(2)}`;
-    actorYawVal.textContent = `${ai.outputs.yawCmd >= 0 ? "+" : ""}${ai.outputs.yawCmd.toFixed(2)}`;
-    actorValEst.textContent = ai.outputs.value.toFixed(1);
-
-    const m = ai.metrics;
-    aiEpVal.textContent = `${m.episodesCompleted} / ${m.totalSteps}`;
-    aiRateVal.textContent = `${m.stepsPerSec} st/s`;
-    aiLastRetVal.textContent = m.lastEpisodeReturn.toFixed(1);
-    aiMeanRetVal.textContent = m.rollingMeanReturn.toFixed(1);
-    aiWinCrashVal.textContent = `${m.landingSuccessRatePct.toFixed(0)}% / ${m.crashRatePct.toFixed(0)}%`;
-    aiLossVal.textContent = `${m.policyLoss.toFixed(3)} / ${m.valueLoss.toFixed(1)}`;
-
-    if (ai.lastError) {
-      aiErrBanner.style.display = "block";
-      aiErrBanner.textContent = `AI ERROR: ${ai.lastError}`;
-    } else {
-      aiErrBanner.style.display = "none";
-    }
-  };
-
-  const updateFlightReadout = (tel: FlightTelemetry, focus: CameraFocusMode): void => {
-    launchBtn.classList.toggle("active", tel.missionMode === "launch");
-    landingBtn.classList.toggle("active", tel.missionMode === "landing");
-    aiBtn.classList.toggle("active", tel.controlMode === "ai_ppo");
-    autoBtn.classList.toggle("active", tel.controlMode === "autopilot");
-    manualBtn.classList.toggle("active", tel.controlMode === "manual");
-    sasBtn.classList.toggle("active", tel.sasEnabled);
-    sasBtn.textContent = tel.sasEnabled ? "SAS: ON [T]" : "SAS: OFF [T]";
-    pauseBtn.textContent = tel.paused ? "RESUME" : "PAUSE";
-    focusBtn.textContent = focus === "rocket" ? "FOCUS: ROCKET" : "FOCUS: PAD & BASE";
-    manualHint.style.display = tel.controlMode === "manual" ? "block" : "none";
-
-    phaseBadge.textContent = tel.phase;
-    tClockEl.textContent = formatTClock(tel.tClockSec);
-
-    altVal.textContent =
-      tel.altitudeM >= 1000
-        ? `${(tel.altitudeM / 1000).toFixed(2)} km`
-        : `${tel.altitudeM.toFixed(1)} m`;
-    speedVal.textContent = `${tel.speedMps.toFixed(1)} m/s (${tel.speedKmh.toFixed(0)} km/h)`;
-    vyVal.textContent = `${tel.verticalSpeedMps >= 0 ? "+" : ""}${tel.verticalSpeedMps.toFixed(1)} m/s`;
-    machVal.textContent = `M${tel.mach.toFixed(2)} · ${(tel.dynamicPressurePa / 1000).toFixed(2)} kPa`;
-    throttleVal.textContent = `${Math.round(tel.throttle * 100)}%`;
-
-    const tiltDeg = (Math.hypot(tel.pitch, tel.roll) * 180) / Math.PI;
-    const legsTxt = tel.landingLegsDeployed > 0.7 ? "DEPLOYED" : "STOWED";
-    legsVal.textContent = `${legsTxt} · ${tiltDeg.toFixed(1)}°`;
-
-    const bPct = Math.round(tel.boosterFuel * 100);
-    boosterFuelBar.fill.style.width = `${bPct}%`;
-    boosterFuelBar.pct.textContent = `${bPct}%`;
-    const sPct = Math.round(tel.shipFuel * 100);
-    shipFuelBar.fill.style.width = `${sPct}%`;
-    shipFuelBar.pct.textContent = `${sPct}%`;
-
-    if (tel.crashEvent) {
-      bannerEl.style.display = "block";
-      bannerEl.className = "status-banner crash";
-      bannerEl.textContent = `RUD (${tel.crashEvent.cause}) · v=${tel.crashEvent.impactSpeedMps.toFixed(1)} m/s`;
-    } else if (tel.landingVerdict !== "NONE") {
-      bannerEl.style.display = "block";
-      const cls =
-        tel.landingVerdict === "NOMINAL LANDING"
-          ? "nominal"
-          : tel.landingVerdict === "HARD LANDING"
-            ? "hard"
-            : "crash";
-      bannerEl.className = `status-banner ${cls}`;
-      const tdVy = tel.touchdownVerticalSpeedMps?.toFixed(2) ?? "-";
-      const tdOff = tel.touchdownOffsetM?.toFixed(1) ?? "-";
-      bannerEl.textContent = `${tel.landingVerdict} · |vy|=${tdVy} m/s · off=${tdOff}m`;
-    } else if (tel.maxQReached && tel.missionMode === "launch") {
-      bannerEl.style.display = "block";
-      bannerEl.className = "status-banner maxq";
-      bannerEl.textContent = `MAX-Q PASSED · Peak ${(tel.maxQPa / 1000).toFixed(2)} kPa`;
-    } else {
-      bannerEl.style.display = "none";
-    }
-  };
-
-  const updateTelemetry = (t: SceneTelemetry, focus: CameraFocusMode): void => {
-    fpsStrong.textContent = String(t.fps);
-    drawStrong.textContent = `${t.drawCalls} (${Math.round(t.triangles / 1000)}k tri)`;
-    gpuStrong.textContent = t.rendererName;
-    updateQualityReadout(t.quality);
-    updateFlightReadout(t.flight, focus);
-    updateAIReadout(t.ai);
-  };
-
-  updatePlanetReadout(initialPlanet);
-  updateQualityReadout("med");
-  return {
-    updatePlanetReadout,
-    updateFlightReadout,
-    updateQualityReadout,
-    updateAIReadout,
-    updateTelemetry,
-  };
-}
-
 function bootstrap(): void {
   const canvas = document.getElementById("sim-canvas");
   const hudRoot = document.getElementById("hud-root");
@@ -543,144 +49,1069 @@ function bootstrap(): void {
   }
 
   const isElectron = Boolean(window.desktopApp?.isElectron);
-  let hudApi: ReturnType<typeof buildHud> | null = null;
 
-  const sceneManager = new SceneManager(canvas, "mars", (telemetry) => {
-    hudApi?.updateTelemetry(telemetry, sceneManager.getFocusMode());
-    window.__STARSHIP_SIM__ = {
-      ready: true,
-      planet: sceneManager.getPlanet().id,
-      missionMode: telemetry.flight.missionMode,
-      controlMode: telemetry.flight.controlMode,
-      phase: telemetry.flight.phase,
-      quality: telemetry.quality,
-      sasEnabled: telemetry.flight.sasEnabled,
-      crashed: telemetry.flight.phase === "CRASHED",
-      fps: telemetry.fps,
-      rendererName: telemetry.rendererName,
-      isElectron,
-      drawCalls: telemetry.drawCalls,
-      triangles: telemetry.triangles,
-      aiState: telemetry.ai.mode,
-      aiEpisodes: telemetry.ai.metrics.episodesCompleted,
-      aiTotalSteps: telemetry.ai.metrics.totalSteps,
-      aiMeanReturn: telemetry.ai.metrics.rollingMeanReturn,
-    };
-  });
+  let latestTelemetry: SceneTelemetry | null = null;
+  let mcSummary: MonteCarloSummary | null = null;
+  let activeTab: ResearchTab = "plots";
+  let leftDeckOpen = true;
+  let labOpen = false;
+  let advOpen = false;
+  let resetConfirmArmTimer: number | null = null;
+  let resetConfirmArmed = false;
+  let lastChartRepaintMs = 0;
 
-  const syncNow = (): void => {
-    const tel = sceneManager.getFlightTelemetry();
-    const ai = sceneManager.getAIStatus();
-    hudApi?.updateFlightReadout(tel, sceneManager.getFocusMode());
-    hudApi?.updateQualityReadout(sceneManager.getQualityPreset());
-    hudApi?.updateAIReadout(ai);
-    if (window.__STARSHIP_SIM__) {
-      window.__STARSHIP_SIM__.planet = tel.planetId;
-      window.__STARSHIP_SIM__.missionMode = tel.missionMode;
-      window.__STARSHIP_SIM__.controlMode = tel.controlMode;
-      window.__STARSHIP_SIM__.phase = tel.phase;
-      window.__STARSHIP_SIM__.quality = sceneManager.getQualityPreset();
-      window.__STARSHIP_SIM__.sasEnabled = tel.sasEnabled;
-      window.__STARSHIP_SIM__.crashed = tel.phase === "CRASHED";
-      window.__STARSHIP_SIM__.aiState = ai.mode;
-      window.__STARSHIP_SIM__.aiEpisodes = ai.metrics.episodesCompleted;
-      window.__STARSHIP_SIM__.aiTotalSteps = ai.metrics.totalSteps;
-      window.__STARSHIP_SIM__.aiMeanReturn = ai.metrics.rollingMeanReturn;
+  let mcStatusText = "Select sample count to run off-thread Monte Carlo dispersion trials.";
+  let mcSummaryEl: HTMLElement | null = null;
+  let mcStatusEl: HTMLElement | null = null;
+
+  const charts = new TelemetryCharts();
+  const nnViz = new NeuralNetVisualizer();
+
+  const renderMonteCarloSummary = (summary: MonteCarloSummary | null): void => {
+    if (!mcSummaryEl || !mcStatusEl) {
+      return;
     }
+    if (!summary) {
+      mcSummaryEl.style.display = "none";
+      mcStatusEl.textContent = mcStatusText;
+      return;
+    }
+    mcStatusEl.textContent = `Completed ${summary.episodes} trials in ${summary.durationMs} ms (${summary.pilot === "ai_ppo" ? "AI NEURAL" : "PID AUTO"} · ${summary.planet.toUpperCase()} ${summary.mission.toUpperCase()})`;
+    mcSummaryEl.style.display = "grid";
+    mcSummaryEl.innerHTML = "";
+    const addStat = (label: string, value: string) => {
+      const item = el("div", "telemetry-item");
+      item.append(el("span", "telemetry-label", label), el("span", "telemetry-value", value));
+      mcSummaryEl!.append(item);
+    };
+    addStat(
+      "Success Rate (95% CI)",
+      `${summary.successRatePct.toFixed(1)}% [${summary.ciLowPct.toFixed(1)}–${summary.ciHighPct.toFixed(1)}%]`
+    );
+    addStat("Crash / RUD Rate", `${summary.crashRatePct.toFixed(1)}% (${summary.crashCount}/${summary.episodes})`);
+    addStat("Return (Mean ± Std)", `${summary.meanReturn.toFixed(1)} ± ${summary.stdReturn.toFixed(1)}`);
+    addStat(
+      "Mean Touchdown |vy|",
+      summary.meanTouchdownVy !== null ? `${summary.meanTouchdownVy.toFixed(2)} m/s` : "N/A"
+    );
+    addStat(
+      "Mean Pad Offset",
+      summary.meanPadOffsetM !== null ? `${summary.meanPadOffsetM.toFixed(1)} m` : "N/A"
+    );
+    addStat("Mean Fuel Left", `${summary.meanFuelRemainingPct.toFixed(1)}%`);
   };
 
-  const selectPlanet = (id: PlanetId): void => {
-    const cfg = sceneManager.setPlanet(id);
-    hudApi?.updatePlanetReadout(cfg);
-    syncNow();
-  };
-
-  hudApi = buildHud(
-    hudRoot,
-    sceneManager.getPlanet(),
-    sceneManager.getRendererName(),
-    isElectron,
-    {
-      onSelectPlanet: selectPlanet,
-      onSelectMissionMode: (mode) => {
-        sceneManager.setMissionMode(mode);
-        syncNow();
-      },
-      onSelectControlMode: (mode) => {
-        sceneManager.setControlMode(mode);
-        syncNow();
-      },
-      onToggleSas: () => {
-        sceneManager.toggleSas();
-        syncNow();
-      },
-      onStart: () => {
-        sceneManager.startMission();
-        syncNow();
-      },
-      onPause: () => {
-        sceneManager.togglePause();
-        syncNow();
-      },
-      onStageSep: () => {
-        sceneManager.triggerStageSeparation();
-        syncNow();
-      },
-      onReset: () => {
-        sceneManager.resetMission();
-        syncNow();
-      },
-      onToggleFocus: () => {
-        const next = sceneManager.getFocusMode() === "rocket" ? "base" : "rocket";
-        sceneManager.setFocusMode(next);
-        syncNow();
-      },
-      onResetCamera: () => sceneManager.resetCamera(),
-      onSelectQuality: (q) => {
-        sceneManager.setQualityPreset(q);
-        syncNow();
-      },
-      onStartLiveTrain: () => {
-        sceneManager.startLiveTrain();
-        syncNow();
-      },
-      onStartTurboTrain: () => {
-        sceneManager.startTurboTrain();
-        syncNow();
-      },
-      onPauseAI: () => {
-        sceneManager.pauseAI();
-        syncNow();
-      },
-      onStartAIEval: () => {
-        sceneManager.startAIEval();
-        syncNow();
-      },
-      onWarmStartPPO: () => {
-        sceneManager.runWarmStartAndPPO();
-        syncNow();
-      },
-      onResetAIWeights: () => {
-        sceneManager.resetAIWeights();
-        syncNow();
-      },
-      onSelectLR: (lr) => {
-        sceneManager.setAILearningRate(lr);
-        syncNow();
-      },
-      onToggleRandomize: () => {
-        sceneManager.setDomainRandomization(!sceneManager.getAIStatus().randomizeSpawn);
-        syncNow();
-      },
-      onExportCheckpoint: () => sceneManager.exportPolicyCheckpoint(),
-      onImportCheckpoint: (json) => {
-        sceneManager.importPolicyCheckpoint(json);
-        syncNow();
-      },
+  const sceneManager = new SceneManager(
+    canvas,
+    "mars",
+    (telemetry) => {
+      latestTelemetry = telemetry;
+      updateUI(telemetry);
+      window.__STARSHIP_SIM__ = {
+        ready: true,
+        planet: sceneManager.getPlanet().id,
+        missionMode: telemetry.flight.missionMode,
+        controlMode: telemetry.flight.controlMode,
+        phase: telemetry.flight.phase,
+        quality: telemetry.quality,
+        sasEnabled: telemetry.flight.sasEnabled,
+        crashed: telemetry.flight.phase === "CRASHED",
+        fps: telemetry.fps,
+        rendererName: telemetry.rendererName,
+        isElectron,
+        drawCalls: telemetry.drawCalls,
+        triangles: telemetry.triangles,
+        aiState: telemetry.ai.mode,
+        aiEpisodes: telemetry.ai.metrics.episodesCompleted,
+        aiTotalSteps: telemetry.ai.metrics.totalSteps,
+        aiMeanReturn: telemetry.ai.metrics.rollingMeanReturn,
+        cameraPreset: telemetry.cameraPreset,
+        audioMuted: telemetry.audioMuted,
+      };
+    },
+    (summary) => {
+      mcSummary = summary;
+      renderMonteCarloSummary(summary);
     }
   );
-  syncNow();
 
+  // =========================================================================
+  // 1. COMPACT TOP BAR
+  // =========================================================================
+  const topBar = el("header", "hud-card hud-topbar");
+
+  const brandGroup = el("div", "topbar-group");
+  brandGroup.append(
+    el("span", "brand-title", "AETHERSIM"),
+    el("span", "brand-stage", "v0.5.0 · Research Workbench")
+  );
+
+  // Planet pills
+  const planetStrip = el("div", "pill-strip");
+  const planetBtns = new Map<PlanetId, HTMLButtonElement>();
+  PLANET_ORDER.forEach((id, idx) => {
+    const cfg = getPlanetConfig(id);
+    const btn = el(
+      "button",
+      "seg-btn",
+      `${idx + 1} ${cfg.name}`,
+      `Switch world to ${cfg.name} (${cfg.physics.gravityMps2.toFixed(2)} m/s²)`
+    );
+    btn.type = "button";
+    btn.addEventListener("click", () => selectPlanet(id));
+    planetStrip.append(btn);
+    planetBtns.set(id, btn);
+  });
+
+  // Mission pills
+  const missionStrip = el("div", "pill-strip");
+  const launchBtn = el("button", "seg-btn", "LAUNCH", "Full-stack launch from pad to orbit insertion");
+  launchBtn.type = "button";
+  launchBtn.addEventListener("click", () => {
+    sceneManager.setMissionMode("launch");
+    syncNow();
+  });
+  const landingBtn = el("button", "seg-btn", "LANDING", "Propulsive descent and precision pad landing");
+  landingBtn.type = "button";
+  landingBtn.addEventListener("click", () => {
+    sceneManager.setMissionMode("landing");
+    syncNow();
+  });
+  missionStrip.append(launchBtn, landingBtn);
+
+  // Pilot pills
+  const pilotStrip = el("div", "pill-strip");
+  const aiPilotBtn = el(
+    "button",
+    "seg-btn",
+    "AI NEURAL",
+    "Fly using the continuous-control PPO neural network"
+  );
+  aiPilotBtn.type = "button";
+  aiPilotBtn.addEventListener("click", () => {
+    sceneManager.setControlMode("ai_ppo");
+    syncNow();
+  });
+  const pidPilotBtn = el(
+    "button",
+    "seg-btn",
+    "PID AUTO",
+    "Fly using the classical guidance & PID flight autopilot"
+  );
+  pidPilotBtn.type = "button";
+  pidPilotBtn.addEventListener("click", () => {
+    sceneManager.setControlMode("autopilot");
+    syncNow();
+  });
+  const manPilotBtn = el(
+    "button",
+    "seg-btn",
+    "MANUAL",
+    "Fly manually with keyboard throttle, TVC gimbal & cold-gas RCS"
+  );
+  manPilotBtn.type = "button";
+  manPilotBtn.addEventListener("click", () => {
+    sceneManager.setControlMode("manual");
+    syncNow();
+  });
+  pilotStrip.append(aiPilotBtn, pidPilotBtn, manPilotBtn);
+
+  // Camera pills
+  const camStrip = el("div", "pill-strip");
+  const camSpecs: Array<{ preset: CameraPreset; label: string; tip: string }> = [
+    { preset: "pad", label: "C1 PAD", tip: "Pad Apron Camera (F1)" },
+    { preset: "drone", label: "C2 DRONE", tip: "Tracking Chase Drone Camera (F2)" },
+    { preset: "engine", label: "C3 ENGINE", tip: "Aft Raptor Nozzle & Plume Camera (F3)" },
+    { preset: "station", label: "C4 STATION", tip: "Spaceport & Habitat Scenic Camera (F4)" },
+    { preset: "orbit", label: "C5 ORBIT", tip: "Free Interactive Orbit Camera (F5)" },
+  ];
+  const camBtns = new Map<CameraPreset, HTMLButtonElement>();
+  for (const spec of camSpecs) {
+    const b = el("button", "seg-btn", spec.label, spec.tip);
+    b.type = "button";
+    b.addEventListener("click", () => {
+      sceneManager.setCameraPreset(spec.preset);
+      syncNow();
+    });
+    camStrip.append(b);
+    camBtns.set(spec.preset, b);
+  }
+  const autoDirBtn = el(
+    "button",
+    "seg-btn",
+    "AUTO",
+    "Auto Director: switches cameras cinematically along the mission timeline"
+  );
+  autoDirBtn.type = "button";
+  autoDirBtn.addEventListener("click", () => {
+    sceneManager.setAutoDirector(!sceneManager.getAutoDirector());
+    syncNow();
+  });
+  camStrip.append(autoDirBtn);
+
+  // Utility group: Quality, Audio, Lab Toggle, Help
+  const utilGroup = el("div", "topbar-group");
+  const qualStrip = el("div", "pill-strip");
+  const qualBtns = new Map<QualityPreset, HTMLButtonElement>();
+  (["low", "med", "high"] as const).forEach((q) => {
+    const qb = el("button", "seg-btn", q.toUpperCase(), `Graphics quality preset: ${q.toUpperCase()}`);
+    qb.type = "button";
+    qb.addEventListener("click", () => {
+      sceneManager.setQualityPreset(q);
+      syncNow();
+    });
+    qualStrip.append(qb);
+    qualBtns.set(q, qb);
+  });
+
+  const audioBtn = el(
+    "button",
+    "action-btn",
+    "AUDIO: OFF",
+    "Toggle procedural Web Audio acoustics (Raptor roar, cryo hiss, RCS & RUD boom)"
+  );
+  audioBtn.type = "button";
+  audioBtn.addEventListener("click", () => {
+    sceneManager.setAudioMuted(!sceneManager.isAudioMuted());
+    syncNow();
+  });
+
+  const leftToggleBtn = el("button", "action-btn active", "DECK", "Show/hide Mission & AI Control Deck");
+  leftToggleBtn.type = "button";
+
+  const labToggleBtn = el("button", "action-btn", "RESEARCH LAB", "Open/close Aerospace Research Workbench (Plots, Neural Net, Faults, Monte Carlo, Export)");
+  labToggleBtn.type = "button";
+
+  const helpBtn = el("button", "action-btn", "?", "Open Quick-Reference Controls & Guide");
+  helpBtn.type = "button";
+
+  utilGroup.append(qualStrip, audioBtn, leftToggleBtn, labToggleBtn, helpBtn);
+  topBar.append(
+    brandGroup,
+    planetStrip,
+    missionStrip,
+    pilotStrip,
+    camStrip,
+    utilGroup
+  );
+
+  // =========================================================================
+  // 2. MIDDLE ROW: LEFT MISSION & GUIDED AI DECK + RIGHT RESEARCH LAB
+  // =========================================================================
+  const midRow = el("div", "hud-mid-row");
+
+  // --- Left Deck ---
+  const leftDeck = el("aside", "hud-card hud-side-panel");
+  const leftHead = el("div", "panel-header");
+  leftHead.append(el("span", "panel-title", "MISSION & AI DECK"));
+  const planetSub = el("span", "planet-subtitle", "");
+  leftHead.append(planetSub);
+
+  const flightActions = el("div", "action-row");
+  const startBtn = el("button", "action-btn primary", "START [Space]", "Start countdown/flight or advance AI episode");
+  startBtn.type = "button";
+  startBtn.addEventListener("click", () => {
+    sceneManager.startMission();
+    syncNow();
+  });
+  const pauseBtn = el("button", "action-btn", "PAUSE", "Pause or resume physics simulation");
+  pauseBtn.type = "button";
+  pauseBtn.addEventListener("click", () => {
+    sceneManager.togglePause();
+    syncNow();
+  });
+  const sepBtn = el("button", "action-btn", "STAGE SEP", "Hot-stage separate Starship from Super Heavy");
+  sepBtn.type = "button";
+  sepBtn.addEventListener("click", () => {
+    sceneManager.triggerStageSeparation();
+    syncNow();
+  });
+  const resetBtn = el("button", "action-btn", "RESET [R]", "Reset vehicle and re-lock camera onto Starship");
+  resetBtn.type = "button";
+  resetBtn.addEventListener("click", () => {
+    sceneManager.resetMission();
+    syncNow();
+  });
+  const sasBtn = el("button", "action-btn", "SAS: ON [T]", "Toggle angular rate damping stability assist");
+  sasBtn.type = "button";
+  sasBtn.addEventListener("click", () => {
+    sceneManager.toggleSas();
+    syncNow();
+  });
+  const legsBtn = el("button", "action-btn", "LEGS [G]", "Deploy or stow Starship landing legs");
+  legsBtn.type = "button";
+  legsBtn.addEventListener("click", () => {
+    sceneManager.toggleLandingLegs();
+    syncNow();
+  });
+  const focusBtn = el("button", "action-btn", "FOCUS: ROCKET", "Toggle Free Orbit camera between Rocket and Pad/Base");
+  focusBtn.type = "button";
+  focusBtn.addEventListener("click", () => {
+    const next = sceneManager.getFocusMode() === "rocket" ? "base" : "rocket";
+    sceneManager.setFocusMode(next);
+    syncNow();
+  });
+  flightActions.append(startBtn, pauseBtn, sepBtn, resetBtn, sasBtn, legsBtn, focusBtn);
+
+  // Guided 3-step AI Section
+  const aiSection = el("div", "section-divider");
+  const aiHead = el("div", "panel-header");
+  aiHead.append(el("span", "panel-title", "GUIDED NEURAL AI (PPO)"));
+  const aiStatePill = el("span", "ai-state-pill", "IDLE");
+  aiHead.append(aiStatePill);
+
+  const guidedStack = el("div", "ai-guided-stack");
+  const liveTrainBtn = el(
+    "button",
+    "action-btn primary",
+    "1. WATCH AI LEARN (3D)",
+    "Watch Starship fly live in 3D, crash/explode, update neural weights, and retry automatically"
+  );
+  liveTrainBtn.type = "button";
+  liveTrainBtn.addEventListener("click", () => {
+    sceneManager.startLiveTrain();
+    syncNow();
+  });
+
+  const turboTrainBtn = el(
+    "button",
+    "action-btn primary",
+    "2. FAST TRAIN (WORKER)",
+    "Turbo Train: trains the AI silently at 30,000+ steps/sec in a background Web Worker"
+  );
+  turboTrainBtn.type = "button";
+  turboTrainBtn.addEventListener("click", () => {
+    sceneManager.startTurboTrain();
+    syncNow();
+  });
+
+  const flyTrainedBtn = el(
+    "button",
+    "action-btn",
+    "3. FLY TRAINED AI",
+    "Fly Trained AI: disables randomness and watches the trained network fly deterministically in 3D"
+  );
+  flyTrainedBtn.type = "button";
+  flyTrainedBtn.addEventListener("click", () => {
+    sceneManager.startAIEval();
+    syncNow();
+  });
+  guidedStack.append(liveTrainBtn, turboTrainBtn, flyTrainedBtn);
+
+  const secondaryAiRow = el("div", "ai-secondary-row");
+  const pauseAiBtn = el("button", "action-btn", "PAUSE AI", "Pause background or live AI training");
+  pauseAiBtn.type = "button";
+  pauseAiBtn.addEventListener("click", () => {
+    sceneManager.pauseAI();
+    syncNow();
+  });
+  const warmStartBtn = el(
+    "button",
+    "action-btn",
+    "PRE-TRAIN (WARM START)",
+    "Pre-train the neural network on classical guidance demos before PPO fine-tuning"
+  );
+  warmStartBtn.type = "button";
+  warmStartBtn.addEventListener("click", () => {
+    sceneManager.runWarmStartAndPPO();
+    syncNow();
+  });
+  secondaryAiRow.append(pauseAiBtn, warmStartBtn);
+
+  // Two-click safety guard on RESET AI BRAIN
+  const resetBrainBtn = el(
+    "button",
+    "action-btn",
+    "RESET AI BRAIN",
+    "Wipe learned neural weights back to random initialization (requires confirmation click)"
+  );
+  resetBrainBtn.type = "button";
+  const clearResetConfirm = () => {
+    resetConfirmArmed = false;
+    resetBrainBtn.textContent = "RESET AI BRAIN";
+    resetBrainBtn.classList.remove("danger-confirm");
+    if (resetConfirmArmTimer !== null) {
+      window.clearTimeout(resetConfirmArmTimer);
+      resetConfirmArmTimer = null;
+    }
+  };
+  resetBrainBtn.addEventListener("click", () => {
+    if (!resetConfirmArmed) {
+      resetConfirmArmed = true;
+      resetBrainBtn.textContent = "Click again to confirm wipe";
+      resetBrainBtn.classList.add("danger-confirm");
+      resetConfirmArmTimer = window.setTimeout(clearResetConfirm, 3000);
+      return;
+    }
+    clearResetConfirm();
+    sceneManager.resetAIWeights();
+    syncNow();
+  });
+
+  // Compact RL metrics
+  const aiMetricsGrid = el("div", "ai-metrics-grid");
+  const makeAiMetric = (label: string) => {
+    const item = el("div", "telemetry-item");
+    const val = el("span", "telemetry-value", "-");
+    item.append(el("span", "telemetry-label", label), val);
+    aiMetricsGrid.append(item);
+    return val;
+  };
+  const aiEpVal = makeAiMetric("Episodes");
+  const aiRateVal = makeAiMetric("Worker Speed");
+  const aiMeanRetVal = makeAiMetric("Mean Return");
+  const aiSuccVal = makeAiMetric("Success %");
+  const aiCrashVal = makeAiMetric("Crash %");
+  const aiLossVal = makeAiMetric("Pi / V Loss");
+
+  // Collapsible Advanced Hyperparameters
+  const advToggleBtn = el("button", "action-btn", "▸ Advanced Hyperparameters", "Learning rate, domain randomization & checkpoint .json");
+  advToggleBtn.type = "button";
+  const advBody = el("div", "section-divider");
+  advBody.style.display = "none";
+  advToggleBtn.addEventListener("click", () => {
+    advOpen = !advOpen;
+    advBody.style.display = advOpen ? "flex" : "none";
+    advToggleBtn.textContent = advOpen ? "▾ Advanced Hyperparameters" : "▸ Advanced Hyperparameters";
+  });
+
+  const lrRow = el("div", "action-row");
+  const lrBtns = new Map<number, HTMLButtonElement>();
+  for (const lr of [3e-4, 6e-4, 1e-3]) {
+    const lbl = lr === 3e-4 ? "LR 3e-4" : lr === 6e-4 ? "LR 6e-4" : "LR 1e-3";
+    const b = el("button", "action-btn", lbl, `Set Adam learning rate to ${lbl}`);
+    b.type = "button";
+    b.addEventListener("click", () => {
+      sceneManager.setAILearningRate(lr);
+      syncNow();
+    });
+    lrRow.append(b);
+    lrBtns.set(lr, b);
+  }
+  const randBtn = el(
+    "button",
+    "action-btn active",
+    "RAND: ON",
+    "Randomize initial position, velocity, and tilt during training"
+  );
+  randBtn.type = "button";
+  randBtn.addEventListener("click", () => {
+    sceneManager.setDomainRandomization(!sceneManager.getAIStatus().randomizeSpawn);
+    syncNow();
+  });
+
+  const ckptRow = el("div", "action-row");
+  const saveCkptBtn = el("button", "action-btn", "SAVE .JSON", "Download trained neural weights as .json checkpoint");
+  saveCkptBtn.type = "button";
+  saveCkptBtn.addEventListener("click", () => {
+    const cp: PolicyCheckpoint = sceneManager.exportPolicyCheckpoint();
+    triggerBrowserDownload(
+      `aethersim-ppo-${cp.planet}-${cp.mission}-ep${cp.episodesCompleted}.json`,
+      JSON.stringify(cp, null, 2),
+      "application/json"
+    );
+  });
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = ".json,application/json";
+  fileInput.style.display = "none";
+  fileInput.addEventListener("change", async () => {
+    const f = fileInput.files?.[0];
+    if (!f) return;
+    sceneManager.importPolicyCheckpoint(await f.text());
+    fileInput.value = "";
+    syncNow();
+  });
+  const loadCkptBtn = el("button", "action-btn", "LOAD .JSON", "Load saved .json neural weights");
+  loadCkptBtn.type = "button";
+  loadCkptBtn.addEventListener("click", () => fileInput.click());
+  ckptRow.append(saveCkptBtn, loadCkptBtn, fileInput);
+  advBody.append(lrRow, randBtn, ckptRow);
+
+  const aiErrBanner = el("div", "status-banner crash");
+  aiErrBanner.style.display = "none";
+
+  aiSection.append(
+    aiHead,
+    guidedStack,
+    secondaryAiRow,
+    resetBrainBtn,
+    aiMetricsGrid,
+    advToggleBtn,
+    advBody,
+    aiErrBanner
+  );
+  leftDeck.append(leftHead, flightActions, aiSection);
+
+  // --- Right Panel: RESEARCH LAB ---
+  const labPanel = el("aside", "hud-card hud-research-panel");
+  labPanel.style.display = "none";
+
+  const labHead = el("div", "panel-header");
+  labHead.append(el("span", "panel-title", "AEROSPACE RESEARCH LAB"));
+  const labCloseBtn = el("button", "action-btn", "✕", "Close Research Lab");
+  labCloseBtn.type = "button";
+  labHead.append(labCloseBtn);
+
+  const tabBar = el("div", "tab-bar");
+  const tabDefs: Array<{ id: ResearchTab; label: string; tip: string }> = [
+    { id: "plots", label: "PLOTS", tip: "Live streaming flight & PPO learning charts" },
+    { id: "nn", label: "NEURAL NET", tip: "Live 14→64→64→3 actor activation visualizer" },
+    { id: "faults", label: "FAULTS", tip: "Inject thrust loss, crosswind, IMU bias/noise & TVC lag" },
+    { id: "mc", label: "MONTE CARLO", tip: "Batch 20/50/100 seeded dispersion runs with 95% CI" },
+    { id: "export", label: "EXPORT", tip: "Export flight CSV, RL training CSV, and JSON bundle" },
+  ];
+  const tabBtns = new Map<ResearchTab, HTMLButtonElement>();
+  const tabViews = new Map<ResearchTab, HTMLElement>();
+
+  const setActiveTab = (tab: ResearchTab) => {
+    activeTab = tab;
+    for (const [id, b] of tabBtns.entries()) {
+      b.classList.toggle("active", id === tab);
+    }
+    for (const [id, view] of tabViews.entries()) {
+      view.style.display = id === tab ? "block" : "none";
+    }
+    if (labOpen) {
+      lastChartRepaintMs = 0;
+      repaintResearchCanvases(true);
+    }
+  };
+
+  for (const td of tabDefs) {
+    const b = el("button", "tab-btn", td.label, td.tip);
+    b.type = "button";
+    b.addEventListener("click", () => setActiveTab(td.id));
+    tabBar.append(b);
+    tabBtns.set(td.id, b);
+  }
+
+  // Tab 1: PLOTS
+  const plotsView = el("div");
+  plotsView.append(charts.root);
+  tabViews.set("plots", plotsView);
+
+  // Tab 2: NEURAL NET
+  const nnView = el("div");
+  nnView.append(nnViz.canvas);
+  tabViews.set("nn", nnView);
+
+  // Tab 3: FAULTS
+  const faultsView = el("div", "section-divider");
+  const makeSlider = (
+    label: string,
+    min: number,
+    max: number,
+    step: number,
+    unit: string,
+    initial: number,
+    onChange: (v: number) => void
+  ) => {
+    const row = el("div", "fault-row");
+    const head = el("div", "fault-row-head");
+    const valStrong = el("strong", undefined, `${initial}${unit}`);
+    head.append(el("span", undefined, label), valStrong);
+    const input = document.createElement("input");
+    input.type = "range";
+    input.className = "fault-slider";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(initial);
+    input.addEventListener("input", () => {
+      const v = Number(input.value);
+      valStrong.textContent = `${v}${unit}`;
+      onChange(v);
+      syncNow();
+    });
+    row.append(head, input);
+    faultsView.append(row);
+    return { input, valStrong, unit };
+  };
+
+  const fThrust = makeSlider("Engine Thrust Loss", 0, 50, 5, "%", 0, (v) =>
+    sceneManager.setFaultConfig({ thrustLossPct: v })
+  );
+  const fAlt = makeSlider("Thrust Fault Trigger Alt", 0, 1000, 50, "m", 0, (v) =>
+    sceneManager.setFaultConfig({ thrustLossTriggerAltM: v })
+  );
+  const fWind = makeSlider("Crosswind / Gust Speed", 0, 40, 2, " m/s", 0, (v) =>
+    sceneManager.setFaultConfig({ windSpeedMps: v })
+  );
+  const fBias = makeSlider("IMU Attitude Bias", 0, 10, 0.5, "°", 0, (v) =>
+    sceneManager.setFaultConfig({ imuBiasDeg: v })
+  );
+  const fNoise = makeSlider("IMU Attitude Noise", 0, 5, 0.5, "°", 0, (v) =>
+    sceneManager.setFaultConfig({ imuNoiseDeg: v })
+  );
+
+  const faultBtnRow = el("div", "action-row");
+  const tvcLagBtn = el("button", "action-btn", "TVC LAG: OFF", "Toggle actuator gimbal lag & 45% authority reduction");
+  tvcLagBtn.type = "button";
+  tvcLagBtn.addEventListener("click", () => {
+    const cur = sceneManager.getFaultConfig().tvcLagEnabled;
+    sceneManager.setFaultConfig({ tvcLagEnabled: !cur });
+    tvcLagBtn.textContent = !cur ? "TVC LAG: ON" : "TVC LAG: OFF";
+    tvcLagBtn.classList.toggle("active", !cur);
+    syncNow();
+  });
+  const resetFaultsBtn = el("button", "action-btn", "RESET FAULTS", "Restore nominal zero-fault conditions");
+  resetFaultsBtn.type = "button";
+  resetFaultsBtn.addEventListener("click", () => {
+    sceneManager.resetFaults();
+    const def: FaultConfig = sceneManager.getFaultConfig();
+    fThrust.input.value = String(def.thrustLossPct);
+    fThrust.valStrong.textContent = `${def.thrustLossPct}${fThrust.unit}`;
+    fAlt.input.value = String(def.thrustLossTriggerAltM);
+    fAlt.valStrong.textContent = `${def.thrustLossTriggerAltM}${fAlt.unit}`;
+    fWind.input.value = String(def.windSpeedMps);
+    fWind.valStrong.textContent = `${def.windSpeedMps}${fWind.unit}`;
+    fBias.input.value = String(def.imuBiasDeg);
+    fBias.valStrong.textContent = `${def.imuBiasDeg}${fBias.unit}`;
+    fNoise.input.value = String(def.imuNoiseDeg);
+    fNoise.valStrong.textContent = `${def.imuNoiseDeg}${fNoise.unit}`;
+    tvcLagBtn.textContent = "TVC LAG: OFF";
+    tvcLagBtn.classList.remove("active");
+    syncNow();
+  });
+  faultBtnRow.append(tvcLagBtn, resetFaultsBtn);
+  faultsView.append(faultBtnRow);
+  tabViews.set("faults", faultsView);
+
+  // Tab 4: MONTE CARLO
+  const mcView = el("div", "section-divider");
+  let mcPilot: MonteCarloPilot = "ai_ppo";
+  const mcPilotRow = el("div", "action-row");
+  const mcAiBtn = el("button", "action-btn active", "PILOT: AI NEURAL");
+  mcAiBtn.type = "button";
+  const mcPidBtn = el("button", "action-btn", "PILOT: PID AUTO");
+  mcPidBtn.type = "button";
+  mcAiBtn.addEventListener("click", () => {
+    mcPilot = "ai_ppo";
+    mcAiBtn.classList.add("active");
+    mcPidBtn.classList.remove("active");
+  });
+  mcPidBtn.addEventListener("click", () => {
+    mcPilot = "autopilot";
+    mcPidBtn.classList.add("active");
+    mcAiBtn.classList.remove("active");
+  });
+  mcPilotRow.append(mcAiBtn, mcPidBtn);
+
+  const mcRunRow = el("div", "action-row");
+  for (const n of [20, 50, 100]) {
+    const rb = el(
+      "button",
+      "action-btn primary",
+      `RUN ${n} TRIALS`,
+      `Run ${n} domain-randomized headless Monte Carlo trials in Web Worker`
+    );
+    rb.type = "button";
+    rb.addEventListener("click", () => {
+      if (sceneManager.isMonteCarloRunning()) return;
+      mcStatusText = `Running ${n} Monte Carlo trials off-thread...`;
+      if (mcStatusEl) mcStatusEl.textContent = mcStatusText;
+      sceneManager.runMonteCarlo(n, mcPilot);
+    });
+    mcRunRow.append(rb);
+  }
+  mcStatusEl = el("div", "planet-subtitle", mcStatusText);
+  mcSummaryEl = el("div", "mc-summary-grid");
+  mcSummaryEl.style.display = "none";
+  mcView.append(mcPilotRow, mcRunRow, mcStatusEl, mcSummaryEl);
+  tabViews.set("mc", mcView);
+
+  // Tab 5: EXPORT
+  const exportView = el("div", "export-stack");
+  const expFlightBtn = el(
+    "button",
+    "action-btn primary",
+    "Export Flight Telemetry (.csv)",
+    "Download high-rate time-series flight telemetry log as CSV"
+  );
+  expFlightBtn.type = "button";
+  expFlightBtn.addEventListener("click", () => {
+    const csv = formatFlightTelemetryCSV(sceneManager.getFlightLog());
+    const tel = sceneManager.getFlightTelemetry();
+    triggerBrowserDownload(
+      `aethersim-flight-${tel.planetId}-${tel.missionMode}.csv`,
+      csv,
+      "text/csv;charset=utf-8"
+    );
+  });
+
+  const expTrainBtn = el(
+    "button",
+    "action-btn primary",
+    "Export RL Training History (.csv)",
+    "Download PPO learning curves, losses & success rate history as CSV"
+  );
+  expTrainBtn.type = "button";
+  expTrainBtn.addEventListener("click", () => {
+    const csv = formatTrainingHistoryCSV(sceneManager.getTrainingHistory());
+    triggerBrowserDownload("aethersim-ppo-training.csv", csv, "text/csv;charset=utf-8");
+  });
+
+  const expBundleBtn = el(
+    "button",
+    "action-btn",
+    "Export Full Experiment Bundle (.json)",
+    "Download reproducible JSON manifest with faults, Monte Carlo CI, training & flight data"
+  );
+  expBundleBtn.type = "button";
+  expBundleBtn.addEventListener("click", () => {
+    const tel = sceneManager.getFlightTelemetry();
+    const json = buildExperimentBundleJSON({
+      aethersimVersion: "0.5.0",
+      planet: tel.planetId,
+      mission: tel.missionMode,
+      pilot: tel.controlMode,
+      faultConfig: sceneManager.getFaultConfig(),
+      monteCarloSummary: mcSummary,
+      trainingHistory: sceneManager.getTrainingHistory(),
+      flightSeries: sceneManager.getFlightLog(),
+    });
+    triggerBrowserDownload(
+      `aethersim-experiment-${tel.planetId}-${tel.missionMode}.json`,
+      json,
+      "application/json"
+    );
+  });
+
+  const expInfo = el(
+    "div",
+    "planet-subtitle",
+    "Exports include true physical state, active faults, Clopper-Pearson Monte Carlo statistics, and PPO training telemetry."
+  );
+  exportView.append(expFlightBtn, expTrainBtn, expBundleBtn, expInfo);
+  tabViews.set("export", exportView);
+
+  labPanel.append(labHead, tabBar, plotsView, nnView, faultsView, mcView, exportView);
+  setActiveTab("plots");
+
+  const setLabOpen = (open: boolean) => {
+    labOpen = open;
+    labPanel.style.display = open ? "flex" : "none";
+    labToggleBtn.classList.toggle("active", open);
+    if (open) {
+      lastChartRepaintMs = 0;
+      repaintResearchCanvases(true);
+    }
+  };
+  labToggleBtn.addEventListener("click", () => setLabOpen(!labOpen));
+  labCloseBtn.addEventListener("click", () => setLabOpen(false));
+
+  leftToggleBtn.addEventListener("click", () => {
+    leftDeckOpen = !leftDeckOpen;
+    leftDeck.style.display = leftDeckOpen ? "flex" : "none";
+    leftToggleBtn.classList.toggle("active", leftDeckOpen);
+  });
+
+  midRow.append(leftDeck, labPanel);
+
+  // =========================================================================
+  // 3. BOTTOM SPACEX WEBCAST TELEMETRY STRIP
+  // =========================================================================
+  const bottomStrip = el("footer", "hud-card hud-bottom-strip");
+  const webcastMain = el("div", "webcast-main");
+
+  const gauges = el("div", "webcast-gauges");
+  const tClockEl = el("span", "tclock-label", "T-00:10.0");
+  const phaseBadge = el("span", "phase-badge", "PRELAUNCH");
+  gauges.append(tClockEl, phaseBadge);
+
+  const makeGauge = (label: string) => {
+    const item = el("div", "telemetry-item");
+    const val = el("span", "telemetry-value", "-");
+    item.append(el("span", "telemetry-label", label), val);
+    gauges.append(item);
+    return val;
+  };
+  const altVal = makeGauge("ALT");
+  const spdVal = makeGauge("SPEED");
+  const vyVal = makeGauge("VERT VEL");
+  const thrVal = makeGauge("THROTTLE");
+  const gVal = makeGauge("G-LOAD");
+  const qVal = makeGauge("DYN PRESS");
+
+  const fuelInline = el("div", "fuel-bars-inline");
+  const makeFuelMini = (label: string) => {
+    const wrap = el("div", "fuel-mini");
+    const track = el("div", "fuel-track");
+    const fill = el("div", "fuel-fill");
+    fill.style.width = "100%";
+    track.append(fill);
+    const pct = el("span", undefined, "100%");
+    wrap.append(el("span", undefined, label), track, pct);
+    fuelInline.append(wrap);
+    return { fill, pct };
+  };
+  const boosterBar = makeFuelMini("BOOSTER");
+  const shipBar = makeFuelMini("SHIP");
+
+  const verdictBanner = el("div", "status-banner");
+  verdictBanner.style.display = "none";
+
+  webcastMain.append(gauges, fuelInline, verdictBanner);
+
+  const manualHint = el(
+    "div",
+    "manual-hint",
+    "MANUAL: W/Shift +Thr · S/Ctrl -Thr · Z 100% · X 0% · Arrows/IJKL Tilt · Q/E Roll · T SAS · G Legs · Space Start/Sep"
+  );
+  manualHint.style.display = "none";
+
+  const footerMeta = el("div", "webcast-footer");
+  const metaLeft = el("div", "topbar-group");
+  const fpsPill = el("span", "status-pill");
+  const fpsStrong = el("strong", undefined, "--");
+  fpsPill.append(document.createTextNode("FPS "), fpsStrong);
+
+  const drawPill = el("span", "status-pill");
+  const drawStrong = el("strong", undefined, "--");
+  drawPill.append(document.createTextNode("DRAWS "), drawStrong);
+
+  const envPill = el("span", "status-pill");
+  envPill.append(
+    document.createTextNode("MODE "),
+    el("strong", undefined, isElectron ? "DESKTOP" : "BROWSER")
+  );
+
+  const faultPill = el("span", "status-pill");
+  const faultStrong = el("strong", undefined, "NOMINAL");
+  faultPill.append(document.createTextNode("FAULTS "), faultStrong);
+
+  metaLeft.append(fpsPill, drawPill, envPill, faultPill);
+
+  const metaRight = el("div", "topbar-group");
+  const gpuPill = el("span", "status-pill");
+  const gpuStrong = el("strong", "gpu-label", sceneManager.getRendererName());
+  gpuStrong.title = sceneManager.getRendererName();
+  gpuPill.append(document.createTextNode("GPU "), gpuStrong);
+
+  const resetCamBtn = el("button", "action-btn", "Reset Cam", "Re-lock camera onto Starship");
+  resetCamBtn.type = "button";
+  resetCamBtn.addEventListener("click", () => sceneManager.resetCamera());
+  metaRight.append(gpuPill, resetCamBtn);
+
+  footerMeta.append(metaLeft, metaRight);
+  bottomStrip.append(webcastMain, manualHint, footerMeta);
+
+  // =========================================================================
+  // 4. HELP / QUICK-REFERENCE MODAL
+  // =========================================================================
+  const helpBackdrop = el("div", "help-modal-backdrop");
+  helpBackdrop.style.display = "none";
+  const helpModal = el("div", "hud-card help-modal");
+  helpModal.innerHTML = `
+    <div class="panel-header">
+      <h3>AetherSim v0.5.0 — Quick Guide &amp; Controls</h3>
+      <button type="button" class="action-btn" id="close-help-btn">CLOSE</button>
+    </div>
+    <p><strong>3-Step Neural AI Workflow:</strong></p>
+    <ul>
+      <li><strong>1. Watch AI Learn (3D):</strong> Flies live in 3D with exploration—crashes/RUDs feed directly into PPO updates.</li>
+      <li><strong>2. Fast Train (Worker):</strong> Trains silently at 30,000+ steps/sec in a background Web Worker while keeping 60 FPS.</li>
+      <li><strong>3. Fly Trained AI:</strong> Disables randomness and evaluates the trained neural network deterministically in 3D.</li>
+    </ul>
+    <p><strong>Keyboard Shortcuts:</strong></p>
+    <ul>
+      <li><code>1 / 2 / 3</code> Switch Mars / Earth / Moon</li>
+      <li><code>F1 – F5</code> Camera Presets (Pad, Drone, Engine, Station, Free Orbit)</li>
+      <li><code>Space</code> Start mission / Trigger Stage Separation · <code>R</code> Reset &amp; Re-lock Camera</li>
+      <li><code>T</code> Toggle SAS · <code>G</code> Toggle Landing Legs</li>
+      <li><code>Manual Pilot:</code> <code>W/Shift</code> &amp; <code>S/Ctrl</code> Throttle · <code>Z/X</code> 100%/0% · <code>Arrows/IJKL</code> Tilt · <code>Q/E</code> Roll</li>
+    </ul>
+  `;
+  helpBackdrop.append(helpModal);
+  const closeHelpBtn = helpModal.querySelector("#close-help-btn") as HTMLButtonElement;
+  closeHelpBtn.addEventListener("click", () => {
+    helpBackdrop.style.display = "none";
+  });
+  helpBackdrop.addEventListener("click", (e) => {
+    if (e.target === helpBackdrop) helpBackdrop.style.display = "none";
+  });
+  helpBtn.addEventListener("click", () => {
+    helpBackdrop.style.display = helpBackdrop.style.display === "none" ? "flex" : "none";
+  });
+
+  hudRoot.append(topBar, midRow, bottomStrip, helpBackdrop);
+
+  // =========================================================================
+  // 5. UI SYNCHRONIZATION & 15 Hz RESEARCH CANVAS THROTTLING
+  // =========================================================================
+  function repaintResearchCanvases(force = false): void {
+    if (!labOpen) return;
+    const now = performance.now();
+    if (!force && now - lastChartRepaintMs < 62) {
+      return; // ~16 Hz cap so WebGL stays 60 FPS
+    }
+    lastChartRepaintMs = now;
+    if (activeTab === "plots") {
+      charts.render(sceneManager.getFlightLog(), sceneManager.getTrainingHistory());
+    } else if (activeTab === "nn") {
+      nnViz.render(sceneManager.getLastAIActivations());
+    }
+  }
+
+  function updateUI(t: SceneTelemetry): void {
+    const cfg = sceneManager.getPlanet();
+    for (const [id, btn] of planetBtns.entries()) {
+      btn.classList.toggle("active", id === cfg.id);
+    }
+    planetSub.textContent = `${cfg.name} · ${cfg.physics.gravityMps2.toFixed(2)} m/s²`;
+
+    const f = t.flight;
+    launchBtn.classList.toggle("active", f.missionMode === "launch");
+    landingBtn.classList.toggle("active", f.missionMode === "landing");
+    aiPilotBtn.classList.toggle("active", f.controlMode === "ai_ppo");
+    pidPilotBtn.classList.toggle("active", f.controlMode === "autopilot");
+    manPilotBtn.classList.toggle("active", f.controlMode === "manual");
+
+    for (const [p, b] of camBtns.entries()) {
+      b.classList.toggle("active", p === t.cameraPreset);
+    }
+    autoDirBtn.classList.toggle("active", t.autoDirector);
+    for (const [q, b] of qualBtns.entries()) {
+      b.classList.toggle("active", q === t.quality);
+    }
+    audioBtn.textContent = t.audioMuted ? "AUDIO: OFF" : "AUDIO: ON";
+    audioBtn.classList.toggle("active", !t.audioMuted);
+
+    sasBtn.classList.toggle("active", f.sasEnabled);
+    sasBtn.textContent = f.sasEnabled ? "SAS: ON [T]" : "SAS: OFF [T]";
+    pauseBtn.textContent = f.paused ? "RESUME" : "PAUSE";
+    focusBtn.textContent =
+      sceneManager.getFocusMode() === "rocket" ? "FOCUS: ROCKET" : "FOCUS: PAD";
+    manualHint.style.display = f.controlMode === "manual" ? "block" : "none";
+
+    // AI status
+    const ai = t.ai;
+    aiStatePill.textContent =
+      ai.mode === "live_train"
+        ? "LIVE 3D"
+        : ai.mode === "turbo_train"
+          ? "WORKER"
+          : ai.mode === "eval"
+            ? "EVAL"
+            : "IDLE";
+    aiStatePill.className = `ai-state-pill ${
+      ai.mode === "live_train" || ai.mode === "turbo_train"
+        ? "training"
+        : ai.mode === "eval"
+          ? "eval"
+          : ""
+    }`;
+    liveTrainBtn.classList.toggle("active", ai.mode === "live_train");
+    turboTrainBtn.classList.toggle("active", ai.mode === "turbo_train");
+    flyTrainedBtn.classList.toggle("active", ai.mode === "eval");
+    randBtn.classList.toggle("active", ai.randomizeSpawn);
+    randBtn.textContent = ai.randomizeSpawn ? "RAND: ON" : "RAND: OFF";
+    for (const [lr, b] of lrBtns.entries()) {
+      b.classList.toggle("active", Math.abs(ai.learningRate - lr) < 1e-6);
+    }
+
+    const m = ai.metrics;
+    aiEpVal.textContent = `${m.episodesCompleted}`;
+    aiRateVal.textContent = `${m.stepsPerSec} st/s`;
+    aiMeanRetVal.textContent = m.rollingMeanReturn.toFixed(1);
+    aiSuccVal.textContent = `${m.landingSuccessRatePct.toFixed(0)}%`;
+    aiCrashVal.textContent = `${m.crashRatePct.toFixed(0)}%`;
+    aiLossVal.textContent = `${m.policyLoss.toFixed(3)}/${m.valueLoss.toFixed(1)}`;
+
+    if (ai.lastError) {
+      aiErrBanner.style.display = "block";
+      aiErrBanner.textContent = `AI ERROR: ${ai.lastError}`;
+    } else {
+      aiErrBanner.style.display = "none";
+    }
+
+    // Bottom webcast telemetry
+    tClockEl.textContent = formatTClock(f.tClockSec);
+    phaseBadge.textContent = f.phase;
+    altVal.textContent =
+      f.altitudeM >= 1000 ? `${(f.altitudeM / 1000).toFixed(2)} km` : `${f.altitudeM.toFixed(1)} m`;
+    spdVal.textContent = `${f.speedMps.toFixed(1)} m/s`;
+    vyVal.textContent = `${f.verticalSpeedMps >= 0 ? "+" : ""}${f.verticalSpeedMps.toFixed(1)} m/s`;
+    thrVal.textContent = `${Math.round(f.throttle * 100)}%`;
+    gVal.textContent = `${f.gLoad.toFixed(2)} g`;
+    qVal.textContent = `${(f.dynamicPressurePa / 1000).toFixed(2)} kPa`;
+
+    const bPct = Math.round(f.boosterFuel * 100);
+    boosterBar.fill.style.width = `${bPct}%`;
+    boosterBar.pct.textContent = `${bPct}%`;
+    const sPct = Math.round(f.shipFuel * 100);
+    shipBar.fill.style.width = `${sPct}%`;
+    shipBar.pct.textContent = `${sPct}%`;
+
+    if (f.crashEvent) {
+      verdictBanner.style.display = "block";
+      verdictBanner.className = "status-banner crash";
+      verdictBanner.textContent = `RUD (${f.crashEvent.cause}) · ${f.crashEvent.impactSpeedMps.toFixed(1)} m/s`;
+    } else if (f.landingVerdict !== "NONE") {
+      verdictBanner.style.display = "block";
+      const cls =
+        f.landingVerdict === "NOMINAL LANDING"
+          ? "nominal"
+          : f.landingVerdict === "HARD LANDING"
+            ? "hard"
+            : "crash";
+      verdictBanner.className = `status-banner ${cls}`;
+      verdictBanner.textContent = `${f.landingVerdict} · |vy|=${f.touchdownVerticalSpeedMps?.toFixed(2) ?? "-"} m/s`;
+    } else if (f.maxQReached && f.missionMode === "launch") {
+      verdictBanner.style.display = "block";
+      verdictBanner.className = "status-banner maxq";
+      verdictBanner.textContent = `MAX-Q ${(f.maxQPa / 1000).toFixed(1)} kPa`;
+    } else {
+      verdictBanner.style.display = "none";
+    }
+
+    fpsStrong.textContent = String(t.fps);
+    drawStrong.textContent = `${t.drawCalls}`;
+    faultStrong.textContent = f.activeFaults;
+    gpuStrong.textContent = t.rendererName;
+
+    repaintResearchCanvases(false);
+  }
+
+  function syncNow(): void {
+    const snap: SceneTelemetry = {
+      fps: latestTelemetry?.fps ?? 0,
+      rendererName: sceneManager.getRendererName(),
+      drawCalls: latestTelemetry?.drawCalls ?? 0,
+      triangles: latestTelemetry?.triangles ?? 0,
+      quality: sceneManager.getQualityPreset(),
+      cameraPreset: sceneManager.getCameraPreset(),
+      autoDirector: sceneManager.getAutoDirector(),
+      audioMuted: sceneManager.isAudioMuted(),
+      flight: sceneManager.getFlightTelemetry(),
+      ai: sceneManager.getAIStatus(),
+    };
+    updateUI(snap);
+    if (window.__STARSHIP_SIM__) {
+      window.__STARSHIP_SIM__.planet = snap.flight.planetId;
+      window.__STARSHIP_SIM__.missionMode = snap.flight.missionMode;
+      window.__STARSHIP_SIM__.controlMode = snap.flight.controlMode;
+      window.__STARSHIP_SIM__.phase = snap.flight.phase;
+      window.__STARSHIP_SIM__.quality = snap.quality;
+      window.__STARSHIP_SIM__.sasEnabled = snap.flight.sasEnabled;
+      window.__STARSHIP_SIM__.crashed = snap.flight.phase === "CRASHED";
+      window.__STARSHIP_SIM__.aiState = snap.ai.mode;
+      window.__STARSHIP_SIM__.aiEpisodes = snap.ai.metrics.episodesCompleted;
+      window.__STARSHIP_SIM__.aiTotalSteps = snap.ai.metrics.totalSteps;
+      window.__STARSHIP_SIM__.aiMeanReturn = snap.ai.metrics.rollingMeanReturn;
+      window.__STARSHIP_SIM__.cameraPreset = snap.cameraPreset;
+      window.__STARSHIP_SIM__.audioMuted = snap.audioMuted;
+    }
+  }
+
+  function selectPlanet(id: PlanetId): void {
+    sceneManager.setPlanet(id);
+    syncNow();
+  }
+
+  syncNow();
   const initialTel = sceneManager.getFlightTelemetry();
   const initialAI = sceneManager.getAIStatus();
   window.__STARSHIP_SIM__ = {
@@ -701,8 +1132,11 @@ function bootstrap(): void {
     aiEpisodes: initialAI.metrics.episodesCompleted,
     aiTotalSteps: initialAI.metrics.totalSteps,
     aiMeanReturn: initialAI.metrics.rollingMeanReturn,
+    cameraPreset: sceneManager.getCameraPreset(),
+    audioMuted: sceneManager.isAudioMuted(),
   };
 
+  // Keyboard bindings (preserving all M1/M2 controls + F1-F5 cameras)
   const keysDown = new Set<string>();
   const recomputeManualAxes = (): void => {
     const thrUp = keysDown.has("KeyW") || keysDown.has("ShiftLeft") || keysDown.has("ShiftRight");
@@ -730,6 +1164,26 @@ function bootstrap(): void {
       selectPlanet("earth");
     } else if (event.key === "3") {
       selectPlanet("moon");
+    } else if (event.code === "F1") {
+      event.preventDefault();
+      sceneManager.setCameraPreset("pad");
+      syncNow();
+    } else if (event.code === "F2") {
+      event.preventDefault();
+      sceneManager.setCameraPreset("drone");
+      syncNow();
+    } else if (event.code === "F3") {
+      event.preventDefault();
+      sceneManager.setCameraPreset("engine");
+      syncNow();
+    } else if (event.code === "F4") {
+      event.preventDefault();
+      sceneManager.setCameraPreset("station");
+      syncNow();
+    } else if (event.code === "F5") {
+      event.preventDefault();
+      sceneManager.setCameraPreset("orbit");
+      syncNow();
     } else if (event.code === "Space") {
       event.preventDefault();
       const tel = sceneManager.getFlightTelemetry();

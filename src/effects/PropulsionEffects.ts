@@ -21,16 +21,37 @@ interface ParticleBuffer {
 }
 
 function createSoftSpriteTexture(): THREE.CanvasTexture {
+  const size = 128;
   const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
+  canvas.width = size;
+  canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  const grad = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
-  grad.addColorStop(0, "rgba(255, 255, 255, 1.0)");
-  grad.addColorStop(0.45, "rgba(255, 255, 255, 0.55)");
-  grad.addColorStop(1, "rgba(255, 255, 255, 0.0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 64, 64);
+  const img = ctx.createImageData(size, size);
+  const half = size * 0.5;
+
+  // Multi-lobe feathered cloud puff with smooth cubic radial falloff (no hard sphere boundary)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const nx = (x - half) / half;
+      const ny = (y - half) / half;
+      const r = Math.hypot(nx, ny);
+      if (r >= 1.0) {
+        continue;
+      }
+      const lobe =
+        0.72 +
+        0.16 * Math.sin(nx * 5.2 + ny * 3.1) +
+        0.12 * Math.cos(nx * 8.4 - ny * 7.6);
+      const falloff = Math.pow(Math.max(0, 1 - r), 2.55) * Math.max(0.25, lobe);
+      const alpha = Math.min(255, Math.max(0, Math.round(falloff * 235)));
+      const off = (y * size + x) * 4;
+      img.data[off] = 255;
+      img.data[off + 1] = 255;
+      img.data[off + 2] = 255;
+      img.data[off + 3] = alpha;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -203,8 +224,8 @@ export class PropulsionEffects {
     addRcs([4.5, 16, 1.2], [Math.PI * 0.5, 0, 0], "yaw", 1);
     addRcs([-4.5, 16, -1.2], [-Math.PI * 0.5, 0, 0], "yaw", -1);
 
-    this.cryoVent = createParticleBuffer(240, 6.5, "#eef7ff", 0.36, this.spriteTex);
-    this.groundBlast = createParticleBuffer(420, 14.0, "#d49a6a", 0.52, this.spriteTex);
+    this.cryoVent = createParticleBuffer(240, 8.5, "#eef7ff", 0.24, this.spriteTex);
+    this.groundBlast = createParticleBuffer(420, 17.5, "#d49a6a", 0.36, this.spriteTex);
     this.worldGroup.add(this.cryoVent.points, this.groundBlast.points);
 
     this.setPlanet(initialPlanet);

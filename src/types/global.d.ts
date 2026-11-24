@@ -28,6 +28,8 @@ export interface SimDiagnostics {
   aiEpisodes?: number;
   aiTotalSteps?: number;
   aiMeanReturn?: number;
+  cameraPreset?: string;
+  audioMuted?: boolean;
 }
 
 declare global {
