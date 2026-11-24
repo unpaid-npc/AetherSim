@@ -1,4 +1,10 @@
 import type { PlanetId } from "../config/planets";
+import {
+  type MonteCarloPilot,
+  type MonteCarloSummary,
+  runMonteCarloEvaluation,
+} from "../research/MonteCarloRunner";
+import type { FaultConfig } from "../sim/FaultInjector";
 import type { MissionMode } from "../sim/FlightController";
 import type { PolicyCheckpoint } from "./NeuralNetwork";
 import { type EvalBatchSummary, PPOTrainer, type TrainingMetrics } from "./PPOTrainer";
@@ -14,6 +20,7 @@ export interface PPOWorkerCallbacks {
   onPaused?: (metrics: TrainingMetrics, checkpoint: PolicyCheckpoint) => void;
   onReady?: (metrics: TrainingMetrics, checkpoint: PolicyCheckpoint) => void;
   onEvalResult?: (summary: EvalBatchSummary) => void;
+  onMonteCarloResult?: (summary: MonteCarloSummary) => void;
   onError?: (message: string) => void;
 }
 
@@ -85,6 +92,9 @@ export class PPOWorkerClient {
       case "EVAL_RESULT":
         this.callbacks.onEvalResult?.(msg.summary);
         break;
+      case "MONTE_CARLO_RESULT":
+        this.callbacks.onMonteCarloResult?.(msg.summary);
+        break;
       case "ERROR":
         this.callbacks.onError?.(msg.message);
         break;
@@ -106,12 +116,22 @@ export class PPOWorkerClient {
     const t = this.fallbackTrainer;
     switch (msg.type) {
       case "INIT":
-        t.setEnvConfig(msg.planetId, msg.missionMode, msg.randomizeSpawn);
+        t.setEnvConfig(
+          msg.planetId,
+          msg.missionMode,
+          msg.randomizeSpawn,
+          msg.faultConfig
+        );
         t.setLearningRate(msg.learningRate);
         this.callbacks.onReady?.(t.getLastMetrics(), t.exportCheckpoint());
         break;
       case "START_TURBO_TRAIN": {
-        t.setEnvConfig(msg.planetId, msg.missionMode, msg.randomizeSpawn);
+        t.setEnvConfig(
+          msg.planetId,
+          msg.missionMode,
+          msg.randomizeSpawn,
+          msg.faultConfig
+        );
         t.setLearningRate(msg.learningRate);
         this.fallbackRunning = true;
         const tick = () => {
@@ -163,6 +183,19 @@ export class PPOWorkerClient {
           t.evaluateBatch(msg.episodes ?? 10, msg.deterministic ?? true)
         );
         break;
+      case "RUN_MONTE_CARLO":
+        this.callbacks.onMonteCarloResult?.(
+          runMonteCarloEvaluation({
+            episodes: msg.episodes,
+            pilot: msg.pilot,
+            planetId: msg.planetId,
+            missionMode: msg.missionMode,
+            faultConfig: msg.faultConfig,
+            checkpoint: msg.pilot === "ai_ppo" ? t.exportCheckpoint() : undefined,
+            seed: msg.seed ?? 2026,
+          })
+        );
+        break;
     }
   }
 
@@ -170,10 +203,18 @@ export class PPOWorkerClient {
     planetId: PlanetId,
     missionMode: MissionMode,
     randomizeSpawn: boolean,
-    learningRate: number
+    learningRate: number,
+    faultConfig?: FaultConfig
   ): void {
     this.ensureWorkerOrFallback(planetId, missionMode, randomizeSpawn, learningRate);
-    this.post({ type: "INIT", planetId, missionMode, randomizeSpawn, learningRate });
+    this.post({
+      type: "INIT",
+      planetId,
+      missionMode,
+      randomizeSpawn,
+      learningRate,
+      faultConfig,
+    });
   }
 
   startTurboTrain(
@@ -181,6 +222,7 @@ export class PPOWorkerClient {
     missionMode: MissionMode,
     randomizeSpawn: boolean,
     learningRate: number,
+    faultConfig?: FaultConfig,
     maxUpdates?: number
   ): void {
     this.ensureWorkerOrFallback(planetId, missionMode, randomizeSpawn, learningRate);
@@ -190,7 +232,28 @@ export class PPOWorkerClient {
       missionMode,
       randomizeSpawn,
       learningRate,
+      faultConfig,
       maxUpdates,
+    });
+  }
+
+  runMonteCarlo(
+    episodes: number,
+    pilot: MonteCarloPilot,
+    planetId: PlanetId,
+    missionMode: MissionMode,
+    faultConfig?: FaultConfig,
+    seed = 2026
+  ): void {
+    this.ensureWorkerOrFallback(planetId, missionMode, true, 6e-4);
+    this.post({
+      type: "RUN_MONTE_CARLO",
+      episodes,
+      pilot,
+      planetId,
+      missionMode,
+      faultConfig,
+      seed,
     });
   }
 

@@ -1,5 +1,10 @@
 import { type PlanetId, getPlanetConfig } from "../config/planets";
 import {
+  type FaultConfig,
+  createDefaultFaultConfig,
+  sanitizeFaultConfig,
+} from "../sim/FaultInjector";
+import {
   type AIActionInput,
   FlightController,
   type FlightTelemetry,
@@ -31,6 +36,7 @@ export interface RLEnvConfig {
   randomizeSpawn: boolean;
   maxSteps?: number;
   padDeckY?: number;
+  faultConfig?: FaultConfig;
 }
 
 export interface RLStepResult {
@@ -44,6 +50,25 @@ export interface RLStepResult {
 
 function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v;
+}
+
+export function isLandingSuccess(tel: FlightTelemetry): boolean {
+  return (
+    tel.missionMode === "landing" &&
+    tel.phase === "TOUCHDOWN" &&
+    tel.landingVerdict === "NOMINAL LANDING"
+  );
+}
+
+export function isLaunchSuccess(tel: FlightTelemetry): boolean {
+  if (tel.missionMode !== "launch" || tel.phase === "CRASHED") {
+    return false;
+  }
+  if (tel.phase === "COMPLETE") {
+    return true;
+  }
+  const tiltDeg = (Math.hypot(tel.pitch, tel.roll) * 180) / Math.PI;
+  return tel.altitudeM >= 1200 && tel.verticalSpeedMps > 35 && tiltDeg < 35;
 }
 
 export function getPadDeckYForPlanet(planetId: PlanetId): number {
@@ -196,26 +221,41 @@ export function computeStepReward(
     };
   }
 
-  // Launch mode reward: climb progress, upright/gravity-turn stability, fuel efficiency
+  // Launch mode reward: upright controlled climb toward target altitude, penalizing sideways/tower drift
+  const tiltRad = Math.hypot(currTel.pitch, currTel.roll);
+  const tiltDeg = (tiltRad * 180) / Math.PI;
   const climbDelta = currTel.altitudeM - prevTel.altitudeM;
-  const horizDrift = Math.hypot(currTel.position.x, currTel.position.z);
-  const distance = climbDelta * 0.055 - (horizDrift / 2000) * 0.05;
-  const velocity = currTel.verticalSpeedMps > 0 ? 0.02 * Math.min(60, currTel.verticalSpeedMps) : -0.15;
-  const targetPitch = currTel.altitudeM < 90 ? 0 : clamp((currTel.altitudeM - 90) / 3600, 0, 0.72);
+  const horizDist = Math.hypot(currTel.position.x, currTel.position.z);
+  const uprightFactor = Math.max(0, Math.cos(tiltRad));
+
+  const towerDriftPenalty =
+    currTel.altitudeM < 300 && horizDist > 40 ? (horizDist - 40) * 0.008 : (horizDist / 2000) * 0.04;
+  const distance =
+    (climbDelta > 0 ? climbDelta * 0.08 * uprightFactor : climbDelta * 0.06) - towerDriftPenalty;
+
+  const velocity =
+    currTel.verticalSpeedMps > 0
+      ? 0.025 * Math.min(60, currTel.verticalSpeedMps) * uprightFactor
+      : -0.22;
+
+  const targetPitch = currTel.altitudeM < 90 ? 0 : clamp((currTel.altitudeM - 90) / 3600, 0, 0.55);
   const pitchErr = Math.abs(currTel.pitch - targetPitch) + Math.abs(currTel.roll);
+  const earlyTiltPenalty =
+    currTel.altitudeM < 300 && tiltDeg > 25 ? -(tiltDeg - 25) * 0.06 : 0;
   const attitude =
-    0.08 * (1.0 - Math.min(2.0, pitchErr / 0.5)) -
-    0.02 * Math.hypot(currTel.angularVelocity.pitch, currTel.angularVelocity.roll);
+    0.12 * (1.0 - Math.min(2.5, pitchErr / 0.45)) +
+    earlyTiltPenalty -
+    0.03 * Math.hypot(currTel.angularVelocity.pitch, currTel.angularVelocity.roll);
   const fuel = -0.01 * currTel.throttle;
 
   let terminal = 0;
-  if (currTel.phase === "COMPLETE") {
-    terminal = 200;
+  if (isLaunchSuccess(currTel)) {
+    terminal = 220;
   } else if (currTel.phase === "CRASHED") {
     const impactV = currTel.crashEvent?.impactSpeedMps ?? currTel.speedMps;
-    terminal = -100 - clamp(impactV * 0.35, 0, 40);
-  } else if (outOfBounds) {
-    terminal = -80;
+    terminal = -120 - clamp(impactV * 0.35, 0, 50);
+  } else if (tiltDeg > 65 || outOfBounds) {
+    terminal = -120;
   }
 
   return {
@@ -236,21 +276,21 @@ export function applyRLSpawnToController(
 ): void {
   const padDeckY = getPadDeckYForPlanet(planetId);
   if (missionMode === "landing") {
-    const dx = randomizeSpawn ? prng.uniform(-35, 35) : 0;
-    const dz = randomizeSpawn ? prng.uniform(-30, 30) : 0;
-    const dAlt = randomizeSpawn ? prng.uniform(-45, 45) : 0;
-    const dvx = randomizeSpawn ? prng.uniform(-5, 5) : 0;
-    const dvy = randomizeSpawn ? prng.uniform(-5, 5) : 0;
-    const dvz = randomizeSpawn ? prng.uniform(-5, 5) : 0;
-    const dPitch = randomizeSpawn ? prng.uniform(-10, 10) * (Math.PI / 180) : 0;
-    const dRoll = randomizeSpawn ? prng.uniform(-10, 10) * (Math.PI / 180) : 0;
+    const dx = randomizeSpawn ? prng.uniform(-22, 22) : 0;
+    const dz = randomizeSpawn ? prng.uniform(-20, 20) : 0;
+    const dAlt = randomizeSpawn ? prng.uniform(-35, 35) : 0;
+    const dvx = randomizeSpawn ? prng.uniform(-4, 4) : 0;
+    const dvy = randomizeSpawn ? prng.uniform(-4, 4) : 0;
+    const dvz = randomizeSpawn ? prng.uniform(-4, 4) : 0;
+    const dPitch = randomizeSpawn ? prng.uniform(-8, 8) * (Math.PI / 180) : 0;
+    const dRoll = randomizeSpawn ? prng.uniform(-8, 8) * (Math.PI / 180) : 0;
 
     ctrl.configureRLSpawn({
       planetId,
       missionMode: "landing",
-      position: { x: 26 + dx, y: padDeckY + 185 + dAlt, z: 10 + dz },
-      velocity: { x: -3.2 + dvx, y: -17.5 + dvy, z: -1.1 + dvz },
-      pitch: 7 * (Math.PI / 180) + dPitch,
+      position: { x: 18 + dx, y: padDeckY + 200 + dAlt, z: 8 + dz },
+      velocity: { x: -2.6 + dvx, y: -17.5 + dvy, z: -1.0 + dvz },
+      pitch: 6 * (Math.PI / 180) + dPitch,
       roll: -2 * (Math.PI / 180) + dRoll,
       yaw: 0,
       shipFuel: 0.72,
@@ -309,8 +349,11 @@ export class RLEnvironment {
       planetId: config.planetId,
       missionMode: config.missionMode,
       randomizeSpawn: config.randomizeSpawn,
-      maxSteps: config.maxSteps ?? (config.missionMode === "landing" ? 400 : 500),
+      maxSteps: config.maxSteps ?? (config.missionMode === "landing" ? 700 : 500),
       padDeckY,
+      faultConfig: config.faultConfig
+        ? sanitizeFaultConfig(config.faultConfig)
+        : createDefaultFaultConfig(),
     };
     this.prng = new SeededPRNG(seed);
     this.controller = new FlightController(
@@ -319,24 +362,31 @@ export class RLEnvironment {
       this.config.missionMode
     );
     this.controller.setControlMode("ai_ppo");
+    this.controller.setFaultConfig(this.config.faultConfig);
     this.prevTelemetry = this.reset();
   }
 
   setPlanetAndMission(
     planetId: PlanetId,
     missionMode: MissionMode,
-    randomizeSpawn = this.config.randomizeSpawn
+    randomizeSpawn = this.config.randomizeSpawn,
+    faultConfig?: FaultConfig
   ): void {
     this.config.planetId = planetId;
     this.config.missionMode = missionMode;
     this.config.randomizeSpawn = randomizeSpawn;
     this.config.padDeckY = getPadDeckYForPlanet(planetId);
-    this.config.maxSteps = missionMode === "landing" ? 400 : 500;
+    this.config.maxSteps = missionMode === "landing" ? 700 : 500;
+    if (faultConfig) {
+      this.config.faultConfig = sanitizeFaultConfig(faultConfig);
+      this.controller.setFaultConfig(this.config.faultConfig);
+    }
   }
 
   reset(obsOut = new Float32Array(OBS_DIM)): FlightTelemetry {
     this.stepCount = 0;
     this.controller.setControlMode("ai_ppo");
+    this.controller.setFaultConfig(this.config.faultConfig);
     applyRLSpawnToController(
       this.controller,
       this.config.planetId,
@@ -346,12 +396,14 @@ export class RLEnvironment {
     );
     const tel = this.controller.getTelemetry();
     this.prevTelemetry = tel;
-    extractObservation(tel, obsOut);
+    const sensed = this.controller.getSensedTelemetry(this.prng.gaussian(0, 1), this.prng.gaussian(0, 1));
+    extractObservation(sensed, obsOut);
     return tel;
   }
 
   getObservation(obsOut = new Float32Array(OBS_DIM)): Float32Array {
-    return extractObservation(this.controller.getTelemetry(), obsOut);
+    const sensed = this.controller.getSensedTelemetry(this.prng.gaussian(0, 1), this.prng.gaussian(0, 1));
+    return extractObservation(sensed, obsOut);
   }
 
   step(rawAction: ArrayLike<number>, obsOut = new Float32Array(OBS_DIM)): RLStepResult {
@@ -368,16 +420,25 @@ export class RLEnvironment {
 
     this.stepCount += 1;
     const outOfBounds = isRLOutOfBounds(curr);
+    const tiltDeg = (Math.hypot(curr.pitch, curr.roll) * 180) / Math.PI;
+    const launchSuccess = curr.missionMode === "launch" && isLaunchSuccess(curr);
+    const launchSidewaysFail = curr.missionMode === "launch" && tiltDeg > 65;
     const terminalPhase =
       curr.phase === "TOUCHDOWN" ||
       curr.phase === "CRASHED" ||
-      curr.phase === "COMPLETE";
+      curr.phase === "COMPLETE" ||
+      launchSuccess ||
+      launchSidewaysFail;
     const timedOut = this.stepCount >= this.config.maxSteps;
     const done = terminalPhase || outOfBounds || timedOut;
 
     const rewardBreakdown = computeStepReward(prev, curr, outOfBounds);
     this.prevTelemetry = curr;
-    extractObservation(curr, obsOut);
+    const sensed = this.controller.getSensedTelemetry(
+      this.prng.gaussian(0, 1),
+      this.prng.gaussian(0, 1)
+    );
+    extractObservation(sensed, obsOut);
 
     return {
       obs: obsOut,

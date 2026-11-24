@@ -9,6 +9,7 @@ uniform float uTime;
 uniform float uProgress;
 varying vec3 vNormalDir;
 varying vec3 vLocalPos;
+varying vec3 vViewDir;
 
 float hash31(vec3 p) {
   p = fract(p * 0.1031);
@@ -16,12 +17,46 @@ float hash31(vec3 p) {
   return fract((p.x + p.y) * p.z);
 }
 
+float noise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(hash31(i), hash31(i + vec3(1, 0, 0)), f.x),
+      mix(hash31(i + vec3(0, 1, 0)), hash31(i + vec3(1, 1, 0)), f.x),
+      f.y
+    ),
+    mix(
+      mix(hash31(i + vec3(0, 0, 1)), hash31(i + vec3(1, 0, 1)), f.x),
+      mix(hash31(i + vec3(0, 1, 1)), hash31(i + vec3(1, 1, 1)), f.x),
+      f.y
+    ),
+    f.z
+  );
+}
+
+float fbm3(vec3 p) {
+  float v = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 4; i++) {
+    v += amp * noise3(p);
+    p = p * 2.03 + vec3(13.1, 7.7, 5.3);
+    amp *= 0.5;
+  }
+  return v;
+}
+
 void main() {
-  vNormalDir = normalize(normal);
   vLocalPos = position;
-  float bump = sin(position.x * 4.5 + uTime * 7.0) * cos(position.y * 4.2 - uTime * 5.0) * sin(position.z * 4.5);
-  float disp = 1.0 + bump * (0.22 + 0.25 * uProgress) + 0.08 * hash31(floor(position * 6.0));
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position * disp, 1.0);
+  vec3 p = position * 2.3 + vec3(0.0, -uTime * 1.6, uTime * 0.7);
+  float billow = fbm3(p) - 0.48;
+  float disp = 1.0 + billow * (0.38 + 0.42 * uProgress);
+  vec3 displaced = position * disp;
+  vec4 mvPos = modelViewMatrix * vec4(displaced, 1.0);
+  vNormalDir = normalize(normalMatrix * normal);
+  vViewDir = normalize(-mvPos.xyz);
+  gl_Position = projectionMatrix * mvPos;
 }
 `;
 
@@ -30,21 +65,49 @@ uniform float uProgress;
 uniform float uTime;
 varying vec3 vNormalDir;
 varying vec3 vLocalPos;
+varying vec3 vViewDir;
+
+float hash31(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float noise3(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(hash31(i), hash31(i + vec3(1, 0, 0)), f.x),
+      mix(hash31(i + vec3(0, 1, 0)), hash31(i + vec3(1, 1, 0)), f.x),
+      f.y
+    ),
+    mix(
+      mix(hash31(i + vec3(0, 0, 1)), hash31(i + vec3(1, 0, 1)), f.x),
+      mix(hash31(i + vec3(0, 1, 1)), hash31(i + vec3(1, 1, 1)), f.x),
+      f.y
+    ),
+    f.z
+  );
+}
 
 void main() {
-  float swirl = sin(vLocalPos.x * 6.0 + uTime * 6.0) * cos(vLocalPos.y * 6.0 - uTime * 4.5) * 0.5 + 0.5;
-  float rim = 1.0 - abs(dot(vNormalDir, vec3(0.0, 1.0, 0.0)));
+  vec3 sampleP = vLocalPos * 3.4 + vec3(0.0, -uTime * 2.8, uTime * 1.1);
+  float swirl = 0.65 * noise3(sampleP) + 0.35 * noise3(sampleP * 2.2);
+  float ndotv = clamp(abs(dot(normalize(vNormalDir), normalize(vViewDir))), 0.0, 1.0);
+  // Soft volumetric silhouette feathering so outer edges dissolve smoothly
+  float edgeFade = pow(ndotv, 1.25);
 
-  vec3 hotCore = vec3(3.2, 2.8, 1.8);
-  vec3 orangeFlame = vec3(2.4, 0.72, 0.14);
-  vec3 soot = vec3(0.14, 0.12, 0.12);
+  vec3 hotCore = vec3(3.1, 2.5, 1.5);
+  vec3 orangeFlame = vec3(2.3, 0.65, 0.12);
+  vec3 soot = vec3(0.11, 0.10, 0.10);
 
-  float coolT = smoothstep(0.05, 0.78, uProgress);
-  vec3 flame = mix(hotCore, orangeFlame, clamp(coolT * 1.15 + swirl * 0.35, 0.0, 1.0));
-  vec3 col = mix(flame, soot, smoothstep(0.45, 0.92, uProgress + (1.0 - swirl) * 0.22));
-  col *= (0.8 + 0.4 * rim);
+  float coolT = smoothstep(0.04, 0.72, uProgress);
+  vec3 flame = mix(hotCore, orangeFlame, clamp(coolT * 1.1 + (1.0 - swirl) * 0.45, 0.0, 1.0));
+  vec3 col = mix(flame, soot, smoothstep(0.32, 0.90, uProgress + (1.0 - swirl) * 0.38));
 
-  float alpha = (1.0 - smoothstep(0.68, 1.0, uProgress)) * 0.95;
+  float alpha = edgeFade * (1.0 - smoothstep(0.55, 1.0, uProgress)) * (0.45 + 0.55 * swirl);
   if (alpha < 0.01) {
     discard;
   }
@@ -80,16 +143,31 @@ const MAX_DEBRIS = 160;
 const MAX_SMOKE = 240;
 
 function createSmokeSprite(): THREE.CanvasTexture {
+  const size = 128;
   const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
+  canvas.width = size;
+  canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  const grad = ctx.createRadialGradient(32, 32, 3, 32, 32, 30);
-  grad.addColorStop(0, "rgba(255,255,255,0.9)");
-  grad.addColorStop(0.55, "rgba(180,180,180,0.45)");
-  grad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 64, 64);
+  const img = ctx.createImageData(size, size);
+  const half = size * 0.5;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const nx = (x - half) / half;
+      const ny = (y - half) / half;
+      const r = Math.hypot(nx, ny);
+      if (r >= 1.0) {
+        continue;
+      }
+      const puff = 0.78 + 0.22 * Math.sin(nx * 6.0 + ny * 4.0) * Math.cos(nx * 4.5 - ny * 5.5);
+      const a = Math.pow(Math.max(0, 1 - r), 2.3) * puff;
+      const off = (y * size + x) * 4;
+      img.data[off] = 225;
+      img.data[off + 1] = 220;
+      img.data[off + 2] = 215;
+      img.data[off + 3] = Math.min(255, Math.max(0, Math.round(a * 220)));
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -142,7 +220,7 @@ export class ExplosionSystem {
     this.noise = new SeededNoise2D(initialPlanet.terrain.seed);
     this.group.visible = false;
 
-    this.fireballGeom = new THREE.IcosahedronGeometry(1.0, 3);
+    this.fireballGeom = new THREE.IcosahedronGeometry(1.0, 5);
     const offsets: Array<[number, number, number]> = [
       [0, 6, 0],
       [-7, 11, 5],

@@ -7,6 +7,7 @@ import {
   OBS_DIM,
   RLEnvironment,
   computeStepReward,
+  isLaunchSuccess,
   mapRawActionToAIInput,
 } from "../ai/RLEnvironment";
 
@@ -161,5 +162,44 @@ describe("Milestone 2 — Continuous PPO Neural Network AI Engine", () => {
     expect(lastMetrics.totalSteps).toBe(18 * 512);
     expect(lastMetrics.stepsPerSec).toBeGreaterThan(500);
     expect(postEval.meanReturn).toBeGreaterThan(preEval.meanReturn + 15);
+  });
+
+  it("prevents LAUNCH sideways reward hacking: upright climb achieves success and beats sideways flight", () => {
+    const uprightEnv = new RLEnvironment(
+      { planetId: "mars", missionMode: "launch", randomizeSpawn: false },
+      11
+    );
+    uprightEnv.reset();
+    let uprightRet = 0;
+    let uprightSuccess = false;
+    for (let t = 0; t < 400; t++) {
+      const res = uprightEnv.step([1.0, 0.0, 0.0]);
+      uprightRet += res.reward;
+      if (isLaunchSuccess(res.telemetry)) {
+        uprightSuccess = true;
+      }
+      if (res.done) break;
+    }
+
+    const sidewaysEnv = new RLEnvironment(
+      { planetId: "mars", missionMode: "launch", randomizeSpawn: false },
+      11
+    );
+    sidewaysEnv.reset();
+    let sidewaysRet = 0;
+    let sidewaysSuccess = false;
+    for (let t = 0; t < 400; t++) {
+      const res = sidewaysEnv.step([1.0, 0.9, 0.4]);
+      sidewaysRet += res.reward;
+      if (isLaunchSuccess(res.telemetry)) {
+        sidewaysSuccess = true;
+      }
+      if (res.done) break;
+    }
+
+    expect(uprightSuccess).toBe(true);
+    expect(sidewaysSuccess).toBe(false);
+    expect(sidewaysRet).toBeLessThan(0);
+    expect(uprightRet).toBeGreaterThan(sidewaysRet + 150);
   });
 });

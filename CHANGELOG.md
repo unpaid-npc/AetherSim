@@ -5,8 +5,29 @@ All notable changes to **AetherSim** are documented in this file following [Keep
 ---
 
 ## [Unreleased]
-- Milestone 3 (`v0.5.0`): Aerospace Research Workbench (live plots, NN activation viewer, deterministic fault injection, Monte Carlo batch runner & CSV/JSON export, GSAP camera cuts, WebAudio).
 - Milestone 4 (`v1.0.0`): Full verification, GPU/CPU profiling, and Windows `.exe` packaging.
+
+---
+
+## [0.5.0] — 2026-11-25
+### Added
+- **Aerospace Research Workbench (`src/research/`, `src/sim/FaultInjector.ts`)**:
+  - `TelemetryCharts.ts`: 4 high-DPI HTML5 canvas streaming plots (`Altitude & Vy`, `Dynamic Pressure & G-Load`, `Tilt & Throttle`, `PPO Learning Curve`) throttled to `~16 Hz` when open.
+  - `NeuralNetVisualizer.ts`: Live `14 -> 64 -> 64 -> 3` Actor MLP activation & Critic `V(s)` visualizer.
+  - `FaultInjector.ts`: Programmable thrust loss (`0–50%`), altitude-triggered faults, density-scaled crosswind (`0–40 m/s`, zero in Moon vacuum), IMU bias/noise via `FlightController.getSensedTelemetry()`, and TVC lag toggle.
+  - `MonteCarloRunner.ts`: Off-thread Web Worker `20 / 50 / 100`-run batch evaluator for `AI NEURAL` and `PID AUTO` with exact 95% Clopper-Pearson binomial confidence intervals.
+  - `DataExporter.ts`: One-click Flight Telemetry `.csv`, RL Training History `.csv`, and full reproducible Experiment Bundle `.json` downloads.
+- **GSAP Multi-Camera Cinematography & Procedural Web Audio (`CameraDirector.ts`, `SoundEngine.ts`)**:
+  - Added `C1 PAD`, `C2 DRONE`, `C3 ENGINE`, `C4 STATION`, `C5 ORBIT` (`F1–F5`) camera presets and `AUTO` timeline director.
+  - Added zero-asset procedural Web Audio synthesis (atmosphere-coupled Raptor roar, cryo hiss, RCS pulses, sub-bass RUD boom).
+- **Milestone 3 Test Coverage (`src/__tests__/researchWorkbench.test.ts`, `ppoAI.test.ts`)**:
+  - Verified `FaultInjector`, Clopper-Pearson CIs, Monte Carlo evaluation, CSV/JSON export schemas, and `LAUNCH` reward alignment (`18/18` Vitest tests passing).
+
+### Fixed & Improved
+- **Camera Re-Lock (`CameraDirector.reLockOnVehicle`)**: Eliminated camera drift after manual resets, planet/mission switches, and post-RUD `LIVE TRAIN` auto-resets.
+- **`LAUNCH` PPO Reward Alignment (`RLEnvironment.ts`, `PPOTrainer.ts`)**: Added explicit `isLaunchSuccess()` (`alt >= 1200 m`, `vy > 35 m/s`, `tilt < 35°`), early-tilt/tower-drift penalties, and `tilt > 65°` failure termination; expanded landing `maxSteps` to `700` for soft final descent.
+- **Intuitive SpaceX-Webcast UX (`src/main.ts`, `src/style.css`)**: Added compact top bar, collapsible Mission & Guided 3-step AI Deck with hover tooltips, two-click `RESET AI BRAIN` confirmation, `?` Help modal, and bottom webcast telemetry strip.
+- **Visual FX Polish (`PropulsionEffects.ts`, `ExplosionSystem.ts`)**: Upgraded cryo/dust particles to `128×128` multi-puff feathered sprites and fireballs to subdivision-5 FBM-displaced spheres with view-normal radial edge fade.
 
 ---
 

@@ -1,5 +1,14 @@
 import { type PlanetConfig, type PlanetId, getPlanetConfig } from "../config/planets";
 import { PAD_FLAT_RADIUS_M, SeededNoise2D, samplePlanetTerrainHeight } from "../utils/noise";
+import {
+  type FaultConfig,
+  applySensorFaultsToTelemetry,
+  computeCrosswindAccel,
+  computeEffectiveThrustScale,
+  createDefaultFaultConfig,
+  describeActiveFaults,
+  sanitizeFaultConfig,
+} from "./FaultInjector";
 
 export type MissionMode = "launch" | "landing";
 export type ControlMode = "ai_ppo" | "autopilot" | "manual";
@@ -137,6 +146,8 @@ export interface FlightTelemetry {
   touchdownVerticalSpeedMps: number | null;
   touchdownOffsetM: number | null;
   touchdownTiltDeg: number | null;
+  gLoad: number;
+  activeFaults: string;
 }
 
 const FIXED_DT = 1 / 60;
@@ -230,6 +241,8 @@ export class FlightController {
   private touchdownVerticalSpeedMps: number | null = null;
   private touchdownOffsetM: number | null = null;
   private touchdownTiltDeg: number | null = null;
+  private faultConfig: FaultConfig = createDefaultFaultConfig();
+  private gLoad = 0;
 
   constructor(
     planetId: PlanetId = "mars",
@@ -241,6 +254,28 @@ export class FlightController {
     this.padDeckY = padDeckY;
     this.missionMode = initialMode;
     this.reset(planetId, padDeckY, initialMode);
+  }
+
+  setFaultConfig(cfg: Partial<FaultConfig>): void {
+    this.faultConfig = sanitizeFaultConfig({ ...this.faultConfig, ...cfg });
+  }
+
+  getFaultConfig(): FaultConfig {
+    return { ...this.faultConfig };
+  }
+
+  resetFaults(): void {
+    this.faultConfig = createDefaultFaultConfig();
+  }
+
+  /** Returns IMU-faulted sensed telemetry without modifying ground-truth physics state. */
+  getSensedTelemetry(pitchNoiseSample = 0, rollNoiseSample = 0): FlightTelemetry {
+    return applySensorFaultsToTelemetry(
+      this.getTelemetry(),
+      this.faultConfig,
+      pitchNoiseSample,
+      rollNoiseSample
+    );
   }
 
   reset(
@@ -867,10 +902,12 @@ export class FlightController {
   ): void {
     this.throttle = clamp(input.throttle, 0, 1);
 
-    const rcsPitchYawAccel = 2.2;
-    const tvcAuthority = activeThrottle > 0.02 ? 2.4 * activeThrottle : 0;
+    const authorityScale = this.faultConfig.tvcLagEnabled ? 0.55 : 1.0;
+    const rcsPitchYawAccel = 2.2 * authorityScale;
+    const tvcAuthority =
+      (activeThrottle > 0.02 ? 2.4 * activeThrottle : 0) * authorityScale;
     const maxPitchRollAccel = rcsPitchYawAccel + tvcAuthority;
-    const maxYawAccel = 1.85;
+    const maxYawAccel = 1.85 * authorityScale;
     const targetMaxRate = 0.95;
 
     const pitchCmd = clamp(input.pitchCmd, -1, 1);
@@ -906,8 +943,15 @@ export class FlightController {
     this.roll = clamp(this.roll + this.rollVel * dt, -Math.PI * 0.78, Math.PI * 0.78);
     this.yaw += this.yawVel * dt;
 
-    this.gimbalX = activeThrottle > 0.02 ? clamp(pitchCmd * 0.2618, -0.2618, 0.2618) : 0;
-    this.gimbalZ = activeThrottle > 0.02 ? clamp(rollCmd * 0.2618, -0.2618, 0.2618) : 0;
+    const gimbalSlew = this.faultConfig.tvcLagEnabled ? 0.45 * dt : 10.0;
+    this.gimbalX =
+      activeThrottle > 0.02
+        ? approach(this.gimbalX, clamp(pitchCmd * 0.2618, -0.2618, 0.2618), gimbalSlew)
+        : 0;
+    this.gimbalZ =
+      activeThrottle > 0.02
+        ? approach(this.gimbalZ, clamp(rollCmd * 0.2618, -0.2618, 0.2618), gimbalSlew)
+        : 0;
     this.rcsThrust = { pitch: rcsPitch, yaw: rcsYaw, roll: rcsRoll };
   }
 
@@ -1047,7 +1091,12 @@ export class FlightController {
     this.gridFinYaw = this.gimbalZ * 0.9;
 
     const maxThrustAccel = this.stageSeparated ? 24.0 : 22.0;
-    const thrustAccel = activeThrottle * maxThrustAccel;
+    const faultScale = computeEffectiveThrustScale(
+      this.faultConfig,
+      altM,
+      this.missionTimeSec
+    );
+    const thrustAccel = activeThrottle * maxThrustAccel * faultScale;
     const sinP = Math.sin(this.pitch);
     const cosP = Math.cos(this.pitch);
     const dirX = sinP;
@@ -1056,10 +1105,16 @@ export class FlightController {
 
     const speed = Math.hypot(this.vel.x, this.vel.y, this.vel.z);
     const dragFactor = rho > 0 ? 0.000035 * rho * speed : 0;
+    const wind = computeCrosswindAccel(this.faultConfig, rho, altM, this.missionTimeSec);
 
-    const ax = dirX * thrustAccel - dragFactor * this.vel.x;
+    const ax = dirX * thrustAccel - dragFactor * this.vel.x + wind.ax;
     const ay = dirY * thrustAccel - g - dragFactor * this.vel.y;
-    const az = dirZ * thrustAccel - dragFactor * this.vel.z;
+    const az = dirZ * thrustAccel - dragFactor * this.vel.z + wind.az;
+
+    this.gLoad =
+      !this.hasLiftedOff && this.pos.y <= this.padDeckY + 0.05
+        ? g / 9.807
+        : Math.hypot(ax, ay + g, az) / 9.807;
 
     this.vel.x += ax * dt;
     this.vel.y += ay * dt;
@@ -1171,7 +1226,12 @@ export class FlightController {
     this.shipFuel = Math.max(0, this.shipFuel - activeThrottle * 0.011 * dt);
     this.frostLevel = clamp(this.frostLevel - dt * 0.03, 0.05, 1);
 
-    const thrustAccel = activeThrottle * maxShipAccel;
+    const faultScale = computeEffectiveThrustScale(
+      this.faultConfig,
+      altM,
+      this.missionTimeSec
+    );
+    const thrustAccel = activeThrottle * maxShipAccel * faultScale;
     const sinP = Math.sin(this.pitch);
     const cosP = Math.cos(this.pitch);
     const dirX = sinP;
@@ -1181,10 +1241,13 @@ export class FlightController {
     const speed = Math.hypot(this.vel.x, this.vel.y, this.vel.z);
     const bellyAreaFactor = 0.002 + 0.012 * Math.abs(Math.sin(this.pitch));
     const dragFactor = rho > 0 ? bellyAreaFactor * rho * speed : 0;
+    const wind = computeCrosswindAccel(this.faultConfig, rho, altM, this.missionTimeSec);
 
-    const ax = dirX * thrustAccel - dragFactor * this.vel.x;
+    const ax = dirX * thrustAccel - dragFactor * this.vel.x + wind.ax;
     const ay = dirY * thrustAccel - g - dragFactor * this.vel.y;
-    const az = dirZ * thrustAccel - dragFactor * this.vel.z;
+    const az = dirZ * thrustAccel - dragFactor * this.vel.z + wind.az;
+
+    this.gLoad = Math.hypot(ax, ay + g, az) / 9.807;
 
     this.vel.x += ax * dt;
     this.vel.y += ay * dt;
@@ -1197,6 +1260,7 @@ export class FlightController {
 
   getTelemetry(): FlightTelemetry {
     const surfaceHeightM = this.getSurfaceHeightAt(this.pos.x, this.pos.z);
+    const altitudeM = Math.max(0, this.pos.y - surfaceHeightM);
     const speedMps = Math.hypot(this.vel.x, this.vel.y, this.vel.z);
     return {
       planetId: this.planet.id,
@@ -1210,7 +1274,7 @@ export class FlightController {
       tClockSec: this.tClockSec,
       padDeckY: this.padDeckY,
       surfaceHeightM,
-      altitudeM: Math.max(0, this.pos.y - surfaceHeightM),
+      altitudeM,
       speedMps,
       speedKmh: speedMps * 3.6,
       verticalSpeedMps: this.vel.y,
@@ -1260,6 +1324,12 @@ export class FlightController {
       touchdownVerticalSpeedMps: this.touchdownVerticalSpeedMps,
       touchdownOffsetM: this.touchdownOffsetM,
       touchdownTiltDeg: this.touchdownTiltDeg,
+      gLoad: this.gLoad,
+      activeFaults: describeActiveFaults(
+        this.faultConfig,
+        altitudeM,
+        this.missionTimeSec
+      ),
     };
   }
 }

@@ -1,6 +1,4 @@
-import gsap from "gsap";
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type {
   ActivationSnapshot,
   PolicyCheckpoint,
@@ -15,13 +13,23 @@ import {
   applyRLSpawnToController,
   computeStepReward,
   extractObservation,
+  isLandingSuccess,
+  isLaunchSuccess,
   isRLOutOfBounds,
   mapRawActionToAIInput,
 } from "../ai/RLEnvironment";
+import { SoundEngine } from "../audio/SoundEngine";
 import { type PlanetConfig, type PlanetId, getPlanetConfig } from "../config/planets";
 import { ExplosionSystem } from "../effects/ExplosionSystem";
 import { PropulsionEffects, type QualityPreset } from "../effects/PropulsionEffects";
+import type { FlightLogSample } from "../research/DataExporter";
+import type { MonteCarloPilot, MonteCarloSummary } from "../research/MonteCarloRunner";
 import { AtmosphereDome } from "../shaders/atmosphereShader";
+import {
+  type FaultConfig,
+  createDefaultFaultConfig,
+  sanitizeFaultConfig,
+} from "../sim/FaultInjector";
 import {
   type AIActionInput,
   type ControlMode,
@@ -30,13 +38,18 @@ import {
   type ManualInputState,
   type MissionMode,
 } from "../sim/FlightController";
+import {
+  CameraDirector,
+  type CameraFocusMode,
+  type CameraPreset,
+} from "./CameraDirector";
 import { LaunchComplex } from "./LaunchComplex";
 import { PostProcessingPipeline } from "./PostProcessing";
 import { disposeVehicleTextureCache } from "./ProceduralTextures";
 import { StarshipVehicle } from "./StarshipVehicle";
 import { TerrainSystem } from "./TerrainSystem";
 
-export type CameraFocusMode = "rocket" | "base";
+export type { CameraFocusMode, CameraPreset } from "./CameraDirector";
 export type AITrainingMode = "idle" | "live_train" | "turbo_train" | "eval";
 
 export interface AIStatusSnapshot {
@@ -59,20 +72,27 @@ export interface SceneTelemetry {
   drawCalls: number;
   triangles: number;
   quality: QualityPreset;
+  cameraPreset: CameraPreset;
+  autoDirector: boolean;
+  audioMuted: boolean;
   flight: FlightTelemetry;
   ai: AIStatusSnapshot;
 }
 
+const MAX_FLIGHT_LOG_SAMPLES = 3000;
+
 /**
  * Coordinates WebGL rendering, planet switching, lighting, PMREM reflections,
- * LaunchComplex, StarshipVehicle, PropulsionEffects, ExplosionSystem, and PostProcessing.
+ * LaunchComplex, StarshipVehicle, PropulsionEffects, ExplosionSystem, PostProcessing,
+ * CameraDirector, SoundEngine, FaultInjector, and the PPO AI Engine.
  */
 export class SceneManager {
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
-  private readonly controls: OrbitControls;
+  private readonly cameraDirector: CameraDirector;
+  private readonly soundEngine: SoundEngine;
 
   private readonly sunLight: THREE.DirectionalLight;
   private readonly hemiLight: THREE.HemisphereLight;
@@ -90,8 +110,6 @@ export class SceneManager {
 
   private currentPlanet: PlanetConfig;
   private quality: QualityPreset = "med";
-  private focusMode: CameraFocusMode = "rocket";
-  private lastTrackedRocketPos = new THREE.Vector3();
   private prevStageSeparated = false;
   private vehicleIntact = true;
   private lastCrashId = -1;
@@ -107,7 +125,7 @@ export class SceneManager {
     rollInput: 0,
   };
 
-  // Milestone 2: Continuous-Control PPO AI state
+  // Milestone 2 & 3: PPO AI, Fault Injection, Monte Carlo & Telemetry Log
   private readonly liveTrainer: PPOTrainer;
   private readonly workerClient: PPOWorkerClient;
   private aiMode: AITrainingMode = "idle";
@@ -126,6 +144,13 @@ export class SceneManager {
   private aiLastOutputs = { throttle: 0, pitchCmd: 0, yawCmd: 0, value: 0 };
   private aiMetrics: TrainingMetrics;
   private aiHistory: TrainingMetrics[] = [];
+
+  private faultConfig: FaultConfig = createDefaultFaultConfig();
+  private readonly flightLog: FlightLogSample[] = [];
+  private logAccumSec = 0;
+  private lastMonteCarloSummary: MonteCarloSummary | null = null;
+  private monteCarloRunning = false;
+  private readonly onMonteCarloResult?: (summary: MonteCarloSummary) => void;
 
   private liveEpActive = false;
   private liveEpSteps = 0;
@@ -150,10 +175,12 @@ export class SceneManager {
   constructor(
     canvas: HTMLCanvasElement,
     initialPlanetId: PlanetId = "mars",
-    onTelemetry?: (telemetry: SceneTelemetry) => void
+    onTelemetry?: (telemetry: SceneTelemetry) => void,
+    onMonteCarloResult?: (summary: MonteCarloSummary) => void
   ) {
     this.canvas = canvas;
     this.onTelemetry = onTelemetry;
+    this.onMonteCarloResult = onMonteCarloResult;
     this.currentPlanet = getPlanetConfig(initialPlanetId);
 
     this.liveTrainer = new PPOTrainer(
@@ -161,6 +188,7 @@ export class SceneManager {
         planetId: initialPlanetId,
         missionMode: "landing",
         randomizeSpawn: this.aiRandomizeSpawn,
+        faultConfig: this.faultConfig,
       },
       { learningRate: this.aiLearningRate, rolloutSteps: 256 },
       42
@@ -191,7 +219,13 @@ export class SceneManager {
         this.aiMetrics = metrics;
         this.emitTelemetryNow();
       },
+      onMonteCarloResult: (summary) => {
+        this.monteCarloRunning = false;
+        this.lastMonteCarloSummary = summary;
+        this.onMonteCarloResult?.(summary);
+      },
       onError: (message) => {
+        this.monteCarloRunning = false;
         this.aiLastError = message;
         this.aiMode = "idle";
         this.emitTelemetryNow();
@@ -220,13 +254,8 @@ export class SceneManager {
       0.5,
       65000
     );
-
-    this.controls = new OrbitControls(this.camera, this.canvas);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.06;
-    this.controls.minDistance = 18;
-    this.controls.maxDistance = 2400;
-    this.controls.maxPolarAngle = Math.PI * 0.495;
+    this.cameraDirector = new CameraDirector(this.camera, this.canvas);
+    this.soundEngine = new SoundEngine();
 
     this.sunLight = new THREE.DirectionalLight("#ffffff", 3.0);
     this.sunLight.castShadow = true;
@@ -285,7 +314,11 @@ export class SceneManager {
 
     this.applyPlanetEnvironment(this.currentPlanet);
     this.syncVisualsFromTelemetry(this.flightController.getTelemetry());
-    this.snapCameraToCurrentSubject();
+    this.cameraDirector.reLockOnVehicle(
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget(),
+      true
+    );
 
     window.addEventListener("resize", this.handleResize);
     this.lastFrameTime = performance.now();
@@ -395,6 +428,10 @@ export class SceneManager {
       this.vehicleIntact = false;
       this.vehicle.setIntactVisible(false);
       this.explosionSystem.trigger(tel.crashEvent);
+      this.soundEngine.triggerExplosion(
+        tel.crashEvent,
+        this.currentPlanet.physics.surfacePressureBar
+      );
     }
 
     this.vehicle.root.position.set(tel.position.x, tel.position.y, tel.position.z);
@@ -426,33 +463,6 @@ export class SceneManager {
 
     this.launchComplex.setUmbilicalRetracted(tel.umbilicalRetracted);
     this.launchComplex.setCatchArmsOpen(tel.catchArmsOpen);
-  }
-
-  private snapCameraToCurrentSubject(): void {
-    gsap.killTweensOf(this.camera.position);
-    gsap.killTweensOf(this.controls.target);
-
-    const tel = this.flightController.getTelemetry();
-    const target = this.getTargetAnchor(tel);
-    const offset =
-      this.focusMode === "base"
-        ? new THREE.Vector3(110, 52, 125)
-        : tel.missionMode === "launch"
-          ? new THREE.Vector3(118, 46, 138)
-          : new THREE.Vector3(62, 24, 72);
-
-    this.controls.target.copy(target);
-    this.camera.position.copy(target).add(offset);
-    this.controls.update();
-    this.lastTrackedRocketPos.set(tel.position.x, tel.position.y, tel.position.z);
-  }
-
-  private getTargetAnchor(tel: FlightTelemetry): THREE.Vector3 {
-    if (this.focusMode === "base") {
-      return this.launchComplex.getBaseFocusTarget();
-    }
-    const yOffset = tel.missionMode === "launch" && !tel.stageSeparated ? 58 : 22;
-    return new THREE.Vector3(tel.position.x, tel.position.y + yOffset, tel.position.z);
   }
 
   setQualityPreset(preset: QualityPreset): void {
@@ -495,13 +505,14 @@ export class SceneManager {
     this.applyPlanetEnvironment(next);
 
     const mission = this.flightController.getTelemetry().missionMode;
-    this.liveTrainer.setEnvConfig(id, mission, this.aiRandomizeSpawn);
+    this.liveTrainer.setEnvConfig(id, mission, this.aiRandomizeSpawn, this.faultConfig);
     if (this.aiMode === "turbo_train") {
       this.workerClient.startTurboTrain(
         id,
         mission,
         this.aiRandomizeSpawn,
-        this.aiLearningRate
+        this.aiLearningRate,
+        this.faultConfig
       );
     }
 
@@ -511,17 +522,28 @@ export class SceneManager {
 
   setMissionMode(mode: MissionMode): void {
     this.flightController.setMissionMode(mode);
-    this.liveTrainer.setEnvConfig(this.currentPlanet.id, mode, this.aiRandomizeSpawn);
+    this.liveTrainer.setEnvConfig(
+      this.currentPlanet.id,
+      mode,
+      this.aiRandomizeSpawn,
+      this.faultConfig
+    );
     if (this.aiMode === "turbo_train") {
       this.workerClient.startTurboTrain(
         this.currentPlanet.id,
         mode,
         this.aiRandomizeSpawn,
-        this.aiLearningRate
+        this.aiLearningRate,
+        this.faultConfig
       );
     }
+    this.flightLog.length = 0;
     this.resetVehicleToFlightState();
-    this.snapCameraToCurrentSubject();
+    this.cameraDirector.reLockOnVehicle(
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget(),
+      true
+    );
   }
 
   setControlMode(mode: ControlMode): void {
@@ -534,7 +556,104 @@ export class SceneManager {
     }
   }
 
-  // --- Milestone 2: Neural AI (PPO) Controls ---
+  // --- Camera & Audio Controls ---
+
+  setCameraPreset(preset: CameraPreset): void {
+    this.cameraDirector.setPreset(
+      preset,
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget(),
+      false
+    );
+  }
+
+  getCameraPreset(): CameraPreset {
+    return this.cameraDirector.getPreset();
+  }
+
+  setAutoDirector(enabled: boolean): void {
+    this.cameraDirector.setAutoDirector(enabled);
+  }
+
+  getAutoDirector(): boolean {
+    return this.cameraDirector.getAutoDirector();
+  }
+
+  setAudioMuted(muted: boolean): void {
+    this.soundEngine.setMuted(muted);
+  }
+
+  isAudioMuted(): boolean {
+    return this.soundEngine.isMuted();
+  }
+
+  // --- Fault Injection Controls ---
+
+  setFaultConfig(next: Partial<FaultConfig>): void {
+    this.faultConfig = sanitizeFaultConfig({ ...this.faultConfig, ...next });
+    this.flightController.setFaultConfig(this.faultConfig);
+    const mission = this.flightController.getTelemetry().missionMode;
+    this.liveTrainer.setEnvConfig(
+      this.currentPlanet.id,
+      mission,
+      this.aiRandomizeSpawn,
+      this.faultConfig
+    );
+    if (this.aiMode === "turbo_train") {
+      this.startTurboTrain();
+    }
+  }
+
+  getFaultConfig(): FaultConfig {
+    return { ...this.faultConfig };
+  }
+
+  resetFaults(): void {
+    this.faultConfig = createDefaultFaultConfig();
+    this.flightController.resetFaults();
+    const mission = this.flightController.getTelemetry().missionMode;
+    this.liveTrainer.setEnvConfig(
+      this.currentPlanet.id,
+      mission,
+      this.aiRandomizeSpawn,
+      this.faultConfig
+    );
+    if (this.aiMode === "turbo_train") {
+      this.startTurboTrain();
+    }
+  }
+
+  // --- Monte Carlo & Data Log Accessors ---
+
+  runMonteCarlo(episodes: number, pilot: MonteCarloPilot): void {
+    if (this.monteCarloRunning) {
+      return;
+    }
+    this.monteCarloRunning = true;
+    this.workerClient.syncWeights(this.liveTrainer.exportCheckpoint());
+    this.workerClient.runMonteCarlo(
+      episodes,
+      pilot,
+      this.currentPlanet.id,
+      this.flightController.getTelemetry().missionMode,
+      this.faultConfig,
+      2026
+    );
+  }
+
+  isMonteCarloRunning(): boolean {
+    return this.monteCarloRunning;
+  }
+
+  getLastMonteCarloSummary(): MonteCarloSummary | null {
+    return this.lastMonteCarloSummary;
+  }
+
+  getFlightLog(): readonly FlightLogSample[] {
+    return this.flightLog;
+  }
+
+  // --- Milestone 2/3: Neural AI (PPO) Controls ---
 
   startLiveTrain(): void {
     this.workerClient.pause();
@@ -554,7 +673,8 @@ export class SceneManager {
       this.currentPlanet.id,
       mission,
       this.aiRandomizeSpawn,
-      this.aiLearningRate
+      this.aiLearningRate,
+      this.faultConfig
     );
   }
 
@@ -579,7 +699,12 @@ export class SceneManager {
   runWarmStartAndPPO(): void {
     this.aiLastError = null;
     const mission = this.flightController.getTelemetry().missionMode;
-    this.liveTrainer.setEnvConfig(this.currentPlanet.id, mission, this.aiRandomizeSpawn);
+    this.liveTrainer.setEnvConfig(
+      this.currentPlanet.id,
+      mission,
+      this.aiRandomizeSpawn,
+      this.faultConfig
+    );
     this.liveTrainer.warmStartFromGuidance(12, 8);
     this.aiMetrics = this.liveTrainer.getLastMetrics();
     this.workerClient.syncWeights(this.liveTrainer.exportCheckpoint());
@@ -610,7 +735,12 @@ export class SceneManager {
   setDomainRandomization(enabled: boolean): void {
     this.aiRandomizeSpawn = enabled;
     const mission = this.flightController.getTelemetry().missionMode;
-    this.liveTrainer.setEnvConfig(this.currentPlanet.id, mission, enabled);
+    this.liveTrainer.setEnvConfig(
+      this.currentPlanet.id,
+      mission,
+      enabled,
+      this.faultConfig
+    );
     if (this.aiMode === "turbo_train") {
       this.startTurboTrain();
     }
@@ -663,6 +793,7 @@ export class SceneManager {
   private spawnLive3DRLEpisode(): void {
     const mission = this.flightController.getTelemetry().missionMode;
     this.flightController.setControlMode("ai_ppo");
+    this.flightController.setFaultConfig(this.faultConfig);
     applyRLSpawnToController(
       this.flightController,
       this.currentPlanet.id,
@@ -670,14 +801,19 @@ export class SceneManager {
       this.aiRandomizeSpawn,
       this.aiPrng
     );
+    this.flightLog.length = 0;
     this.resetVehicleToFlightState();
-    this.snapCameraToCurrentSubject();
+    this.cameraDirector.reLockOnVehicle(
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget(),
+      true
+    );
 
     this.liveEpActive = true;
     this.liveEpSteps = 0;
     this.liveEpReturn = 0;
     this.liveResetWaitTimer = 0;
-    this.aiDecisionTimer = RL_CONTROL_DT; // Trigger immediate first inference
+    this.aiDecisionTimer = RL_CONTROL_DT;
     this.livePrevTel = this.flightController.getTelemetry();
     this.liveLastObs = null;
   }
@@ -693,10 +829,13 @@ export class SceneManager {
     }
     this.aiDecisionTimer -= RL_CONTROL_DT;
 
-    const obs = extractObservation(currentTel, new Float32Array(OBS_DIM));
+    const sensedTel = this.flightController.getSensedTelemetry(
+      this.aiPrng.gaussian(0, 1),
+      this.aiPrng.gaussian(0, 1)
+    );
+    const obs = extractObservation(sensedTel, new Float32Array(OBS_DIM));
     const deterministic = this.aiMode !== "live_train";
 
-    // Record previous transition in Live 3D Train mode
     if (
       this.aiMode === "live_train" &&
       this.liveEpActive &&
@@ -762,10 +901,15 @@ export class SceneManager {
     }
 
     const outOfBounds = isRLOutOfBounds(nextTel);
+    const tiltDeg = (Math.hypot(nextTel.pitch, nextTel.roll) * 180) / Math.PI;
+    const launchSuccess = nextTel.missionMode === "launch" && isLaunchSuccess(nextTel);
+    const launchSidewaysFail = nextTel.missionMode === "launch" && tiltDeg > 65;
     const terminalPhase =
       nextTel.phase === "TOUCHDOWN" ||
       nextTel.phase === "CRASHED" ||
-      nextTel.phase === "COMPLETE";
+      nextTel.phase === "COMPLETE" ||
+      launchSuccess ||
+      launchSidewaysFail;
     const maxSteps = nextTel.missionMode === "landing" ? 400 : 500;
     const timedOut = this.liveEpSteps >= maxSteps;
 
@@ -774,9 +918,9 @@ export class SceneManager {
       this.liveEpReturn += termRew.totalReward;
       const success =
         nextTel.missionMode === "landing"
-          ? nextTel.phase === "TOUCHDOWN" && nextTel.landingVerdict === "NOMINAL LANDING"
-          : nextTel.phase === "COMPLETE";
-      const crashed = nextTel.phase === "CRASHED";
+          ? isLandingSuccess(nextTel)
+          : isLaunchSuccess(nextTel);
+      const crashed = nextTel.phase === "CRASHED" || launchSidewaysFail;
 
       const updated = this.liveTrainer.recordExternalTransition(
         this.liveLastObs,
@@ -815,6 +959,9 @@ export class SceneManager {
       drawCalls: this.renderer.info.render.calls,
       triangles: this.renderer.info.render.triangles,
       quality: this.quality,
+      cameraPreset: this.cameraDirector.getPreset(),
+      autoDirector: this.cameraDirector.getAutoDirector(),
+      audioMuted: this.soundEngine.isMuted(),
       flight: this.flightController.getTelemetry(),
       ai: this.getAIStatus(),
     });
@@ -833,7 +980,13 @@ export class SceneManager {
       this.spawnLive3DRLEpisode();
       return;
     }
+    this.flightLog.length = 0;
     this.flightController.startMission();
+    this.cameraDirector.reLockOnVehicle(
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget(),
+      false
+    );
   }
 
   togglePause(): boolean {
@@ -854,13 +1007,19 @@ export class SceneManager {
       this.spawnLive3DRLEpisode();
       return;
     }
+    this.flightLog.length = 0;
     this.flightController.reset(
       this.currentPlanet.id,
       this.launchComplex.getPadDeckY(),
       tel.missionMode
     );
+    this.flightController.setFaultConfig(this.faultConfig);
     this.resetVehicleToFlightState();
-    this.snapCameraToCurrentSubject();
+    this.cameraDirector.reLockOnVehicle(
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget(),
+      true
+    );
   }
 
   private resetVehicleToFlightState(): void {
@@ -876,12 +1035,15 @@ export class SceneManager {
   }
 
   setFocusMode(focus: CameraFocusMode): void {
-    this.focusMode = focus;
-    this.resetCamera();
+    this.cameraDirector.setFocusMode(
+      focus,
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget()
+    );
   }
 
   getFocusMode(): CameraFocusMode {
-    return this.focusMode;
+    return this.cameraDirector.getFocusMode();
   }
 
   setManualInput(next: Partial<ManualInputState>): void {
@@ -904,34 +1066,11 @@ export class SceneManager {
   }
 
   resetCamera(): void {
-    gsap.killTweensOf(this.camera.position);
-    gsap.killTweensOf(this.controls.target);
-
-    const tel = this.flightController.getTelemetry();
-    const target = this.getTargetAnchor(tel);
-    const offset =
-      this.focusMode === "base"
-        ? new THREE.Vector3(110, 52, 125)
-        : tel.missionMode === "launch"
-          ? new THREE.Vector3(118, 46, 138)
-          : new THREE.Vector3(62, 24, 72);
-    const camPos = target.clone().add(offset);
-
-    gsap.to(this.camera.position, {
-      x: camPos.x,
-      y: camPos.y,
-      z: camPos.z,
-      duration: 0.85,
-      ease: "power2.out",
-    });
-    gsap.to(this.controls.target, {
-      x: target.x,
-      y: target.y,
-      z: target.z,
-      duration: 0.85,
-      ease: "power2.out",
-      onUpdate: () => this.controls.update(),
-    });
+    this.cameraDirector.reLockOnVehicle(
+      this.flightController.getTelemetry(),
+      this.launchComplex.getBaseFocusTarget(),
+      false
+    );
   }
 
   private readonly handleResize = (): void => {
@@ -945,6 +1084,46 @@ export class SceneManager {
     this.renderer.setSize(width, height, false);
     this.postProcessing.setSize(width, height, pr);
   };
+
+  private recordFlightSample(tel: FlightTelemetry, dt: number): void {
+    if (!tel.running || tel.paused) {
+      return;
+    }
+    this.logAccumSec += dt;
+    if (this.logAccumSec < 0.1) {
+      return;
+    }
+    this.logAccumSec = 0;
+    const fuelFrac =
+      tel.missionMode === "launch" && !tel.stageSeparated
+        ? tel.boosterFuel
+        : tel.shipFuel;
+    this.flightLog.push({
+      tSec: tel.missionTimeSec,
+      phase: tel.phase,
+      planet: tel.planetId,
+      mission: tel.missionMode,
+      pilot: tel.controlMode,
+      x: tel.position.x,
+      altM: tel.altitudeM,
+      z: tel.position.z,
+      vx: tel.velocity.x,
+      vy: tel.velocity.y,
+      vz: tel.velocity.z,
+      speedMps: tel.speedMps,
+      tiltDeg: (Math.hypot(tel.pitch, tel.roll) * 180) / Math.PI,
+      throttle: tel.throttle,
+      qKpa: tel.dynamicPressurePa / 1000,
+      gLoad: tel.gLoad,
+      fuelFrac,
+      rcsPitch: tel.rcsThrust.pitch,
+      rcsYaw: tel.rcsThrust.roll,
+      activeFaults: tel.activeFaults,
+    });
+    if (this.flightLog.length > MAX_FLIGHT_LOG_SAMPLES) {
+      this.flightLog.shift();
+    }
+  }
 
   private readonly animate = (): void => {
     if (this.disposed) {
@@ -966,28 +1145,24 @@ export class SceneManager {
     );
     this.manualInput.throttleSet = null;
     this.handleLiveTrainPostPhysics(dt, tel);
+    this.recordFlightSample(tel, dt);
 
     this.syncVisualsFromTelemetry(tel);
     this.propulsionEffects.update(dt, tel, this.vehicleIntact);
     this.explosionSystem.update(dt);
     this.launchComplex.update(this.elapsedSec);
 
-    if (this.focusMode === "rocket") {
-      const dx = tel.position.x - this.lastTrackedRocketPos.x;
-      const dy = tel.position.y - this.lastTrackedRocketPos.y;
-      const dz = tel.position.z - this.lastTrackedRocketPos.z;
-      if (dx !== 0 || dy !== 0 || dz !== 0) {
-        this.camera.position.x += dx;
-        this.camera.position.y += dy;
-        this.camera.position.z += dz;
-        this.controls.target.x += dx;
-        this.controls.target.y += dy;
-        this.controls.target.z += dz;
-      }
-      this.lastTrackedRocketPos.set(tel.position.x, tel.position.y, tel.position.z);
-    }
+    this.cameraDirector.update(dt, tel, this.launchComplex.getBaseFocusTarget());
 
-    this.controls.update();
+    const camDist = this.camera.position.distanceTo(
+      new THREE.Vector3(tel.position.x, tel.position.y, tel.position.z)
+    );
+    this.soundEngine.update(
+      tel,
+      camDist,
+      this.currentPlanet.physics.surfacePressureBar,
+      this.vehicleIntact
+    );
 
     // Attenuate atmospheric ground fog gracefully as vehicle climbs toward space
     if (this.scene.fog instanceof THREE.FogExp2) {
@@ -996,7 +1171,7 @@ export class SceneManager {
       this.scene.fog.density = baseFog * altFade;
     }
 
-    // Apply transient camera shake around controls position, then restore cleanly
+    // Apply transient camera shake around CameraDirector position, then restore cleanly
     this.explosionSystem.getCameraShakeOffset(this.shakeOffset);
     this.camera.position.add(this.shakeOffset);
     this.camera.updateMatrixWorld();
@@ -1007,9 +1182,6 @@ export class SceneManager {
       this.projVec.set(tel.position.x, tel.position.y, tel.position.z).project(this.camera);
       const uvX = this.projVec.x * 0.5 + 0.5;
       const uvY = this.projVec.y * 0.5 + 0.5;
-      const camDist = this.camera.position.distanceTo(
-        new THREE.Vector3(tel.position.x, tel.position.y, tel.position.z)
-      );
       const distFactor = Math.max(0, Math.min(1, 220 / Math.max(40, camDist)));
       const inFront = this.projVec.z < 1.0 ? 1.0 : 0.0;
       this.postProcessing.setSchlierenState(
@@ -1039,12 +1211,11 @@ export class SceneManager {
   dispose(): void {
     this.disposed = true;
     this.workerClient.dispose();
+    this.soundEngine.dispose();
     window.cancelAnimationFrame(this.rafId);
     window.removeEventListener("resize", this.handleResize);
-    gsap.killTweensOf(this.camera.position);
-    gsap.killTweensOf(this.controls.target);
 
-    this.controls.dispose();
+    this.cameraDirector.dispose();
     this.atmosphereDome.dispose();
     this.terrainSystem.dispose();
     this.launchComplex.dispose();
