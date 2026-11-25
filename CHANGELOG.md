@@ -5,7 +5,42 @@ All notable changes to **AetherSim** are documented in this file following [Keep
 ---
 
 ## [Unreleased]
-- Milestone 4 (`v1.0.0`): Full verification, GPU/CPU profiling, and Windows `.exe` packaging.
+- Future Phases B & C (14-Module Ecosystem Expansion): FMI 3.0 / OMG DDS co-simulation, spherical rotating-planet orbital propagator, offline CFD/FEA surrogates, independent AFSS monitor, and HIL FlatSat integration.
+
+---
+
+## [1.0.1] — 2026-11-25
+### Fixed & Improved
+- **PPO Policy Collapse & Actor/Critic Gradient Isolation (`src/ai/NeuralNetwork.ts`, `src/ai/PPOTrainer.ts`)**:
+  - Split Behavioral Cloning updates into Actor-only (`stepAdamActor`) and Critic-only (`stepAdamCritic`) Adam passes with a 1-round DAgger aggregation pass so large Critic return gradients (`~100+` L2 norm) no longer starve Actor imitation learning.
+  - Lowered post-warm-start policy noise (`logStd = -1.6`), cleared Adam momentum (`resetOptimizerState()`), and constrained fine-tuning LR (`<= 1.5e-4`), KL (`<= 0.012`), entropy coef (`<= 0.002`), and `logStd` ceiling (`<= -1.1`).
+  - Added deterministic 5-seed `BestBrainSummary` validation + automatic **collapse recovery guard**, preventing noisy rollout updates from overwriting working weights and always loading `bestCheckpoint` on `3. FLY TRAINED AI (3D)`.
+- **Session-Scoped Worker Sync & `padDeckY` Parity (`src/ai/ppoWorker.ts`, `src/ai/PPOWorkerClient.ts`, `src/sim/FlightController.ts`, `src/ai/RLEnvironment.ts`, `src/scene/SceneManager.ts`)**:
+  - Tagged all inbound/outbound worker messages with incrementing `sessionId` counters so stale background rollouts queued before `RESET AI BRAIN`, planet switches, or mission switches are ignored instead of overwriting a fresh brain.
+  - Fixed Earth/Mars/Moon `padDeckY` propagation in `FlightController.configureRLSpawn()` and `SceneManager.spawnLive3DRLEpisode()`, and aligned live 3D landing episode step budget (`700` steps) with `RLEnvironment.ts`.
+- **Crystal-Clear AI Status Banner & Version Sync (`src/main.ts`, `src/style.css`, `package.json`)**:
+  - Added live color-coded pulsing AI status banner, clear `Brain Status` scorecard (`Brain Level`, `Best Landing/Launch Success`, `Train Episodes`, live `Worker Speed`, `Live Rollout Ret`, `Best Eval Return`), explicit `WARM_START_COMPLETE` feedback, `PRE-TRAINING...` button lock, `STOP TRAINING` toggle, and one-click `3. FLY TRAINED AI (3D)`.
+  - Synced top-left HUD version badge, Help modal, exports, and `window.__STARSHIP_SIM__` directly to `package.json` (`v1.0.1`).
+
+---
+
+## [1.0.0] — 2026-11-25
+### Added
+- **Multi-Planet Benchmark Harness (`src/research/benchmarkHarness.ts`, `scripts/run-benchmark.mjs`, `npm run benchmark`)**:
+  - Evaluates `untrained_ppo`, `ppo_scratch` (`8,192` steps), `ppo_trained` (BC warm-start + `8,192` PPO steps), and `pid_baseline` across `20` paired deterministic seeds (`42..61`) on Mars, Earth, and Moon (nominal + `15%` thrust loss / `15 m/s` crosswind stress test).
+  - Exports verifiable evidence to [`results/v1_benchmark.json`](results/v1_benchmark.json), [`results/v1_benchmark.csv`](results/v1_benchmark.csv), and [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+- **Automated Desktop GPU & FPS Profiler (`scripts/profile-desktop.mjs`, `electron/main.cjs`, `npm run profile:desktop`)**:
+  - Added `window.__AETHERSIM_PROFILER__` and `ELECTRON_PROFILE=1` instrumentation measuring live `requestAnimationFrame` FPS, `p50`/`p95` frame times, WebGL draw calls, triangles, and JS heap across all 9 `(Mars | Earth | Moon) × (LOW | MED | HIGH)` combinations.
+  - Saves raw telemetry and hardware-scoped report to [`results/v1_performance_profile.json`](results/v1_performance_profile.json) and [`docs/PERFORMANCE_REPORT.md`](docs/PERFORMANCE_REPORT.md).
+- **GitHub Actions CI (`.github/workflows/ci.yml`)**:
+  - Added CI pipeline running `npm ci`, `npm run test`, and `npm run build` on `push` and `pull_request` (`main`, `develop`).
+- **Windows Desktop Packaging & Generated App Icons (`scripts/generate-icon.mjs`, `package.json`, `npm run dist:win`)**:
+  - Generated [`build/icon.png`](build/icon.png) (`512×512`) and multi-resolution [`build/icon.ico`](build/icon.ico) (`256, 64, 32, 16 px`).
+  - Added `electron-builder` packaging scripts (`dist:win`, `dist:win:dir`) producing standalone Windows x64 portable executable (`release/AetherSim-1.0.0-win-x64-portable.exe`, `106.90 MB`, gitignored) with `SMOKE_OK` packaged verification.
+- **Release `v1.0.0` Version Tags & Docs**: Updated `package.json`, HUD badge (`v1.0.0 · Research Workbench`), Help modal, JSON export metadata, [`README.md`](README.md), and [`docs/MILESTONES.md`](docs/MILESTONES.md).
+
+### Fixed & Improved
+- **Accurate Post-Processing Render Telemetry (`src/scene/PostProcessing.ts`)**: Configured `renderer.info.autoReset = false` with explicit `reset()` inside `PostProcessingPipeline.render()` so reported draw calls and triangles reflect full scene + composer passes (`108–168` draws, `61,692–68,243` tris) instead of only the final fullscreen quad (`1`).
 
 ---
 

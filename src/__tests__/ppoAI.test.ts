@@ -6,10 +6,12 @@ import {
   ACTION_DIM,
   OBS_DIM,
   RLEnvironment,
+  applyRLSpawnToController,
   computeStepReward,
   isLaunchSuccess,
   mapRawActionToAIInput,
 } from "../ai/RLEnvironment";
+import { FlightController } from "../sim/FlightController";
 
 describe("Milestone 2 — Continuous PPO Neural Network AI Engine", () => {
   it("produces deterministic forward passes, exact activations, and lossless JSON checkpoint round-trip", () => {
@@ -202,4 +204,55 @@ describe("Milestone 2 — Continuous PPO Neural Network AI Engine", () => {
     expect(sidewaysRet).toBeLessThan(0);
     expect(uprightRet).toBeGreaterThan(sidewaysRet + 150);
   });
+
+  it("hotfix v1.0.1: Earth landing warm-start achieves high deterministic landing rate and resists PPO collapse", () => {
+    const trainer = new PPOTrainer(
+      { planetId: "earth", missionMode: "landing", randomizeSpawn: true },
+      { learningRate: 6e-4, rolloutSteps: 512, epochs: 6, miniBatchSize: 64 },
+      42
+    );
+
+    const warmRes = trainer.warmStartWithSummary(12, 14);
+    expect(warmRes.bestBrain.hasTrainedWeights).toBe(true);
+    expect(warmRes.bestBrain.brainLevel).toBe("pre_trained");
+    expect(trainer.policy.logStd[0]).toBeLessThanOrEqual(-1.4);
+    expect(warmRes.bestBrain.evalSafeRatePct).toBeGreaterThanOrEqual(80);
+    expect(warmRes.evalSummary.crashRatePct).toBeLessThanOrEqual(20);
+
+    // Run 8 subsequent PPO updates (4,096 steps) and verify policy-collapse guard preserves best brain
+    for (let u = 0; u < 8; u++) {
+      trainer.trainOneUpdate();
+    }
+
+    const postBest = trainer.getBestBrain();
+    expect(postBest.hasTrainedWeights).toBe(true);
+    expect(postBest.evalSafeRatePct).toBeGreaterThanOrEqual(80);
+
+    // Independently evaluate exported best checkpoint through pure ActorCriticMLP forward passes
+    const verifier = new PPOTrainer(
+      { planetId: "earth", missionMode: "landing", randomizeSpawn: true },
+      { rolloutSteps: 512 },
+      42
+    );
+    verifier.loadCheckpoint(trainer.exportBestCheckpoint(), postBest);
+    const verifyEval = verifier.evaluateBatch(5, true, 9001);
+    const verifySafePct = verifyEval.successRatePct + verifyEval.hardLandingRatePct;
+    console.info(
+      `[Hotfix v1.0.1 Earth Warm-Start & Anti-Collapse] preSafe=${warmRes.bestBrain.evalSafeRatePct.toFixed(0)}% (nom=${warmRes.bestBrain.evalSuccessRatePct.toFixed(0)}%, ret=${warmRes.bestBrain.evalMeanReturn.toFixed(1)}), postBestSafe=${verifySafePct.toFixed(0)}% (nom=${verifyEval.successRatePct.toFixed(0)}%, ret=${verifyEval.meanReturn.toFixed(1)})`
+    );
+    expect(verifySafePct).toBeGreaterThanOrEqual(80);
+    expect(verifyEval.crashRatePct).toBeLessThanOrEqual(20);
+
+    // Verify clean session/context reset when switching planet & padDeckY parity
+    trainer.setEnvConfig("mars", "landing", true);
+    expect(trainer.getBestBrain().hasTrainedWeights).toBe(false);
+    expect(trainer.brainLevel).toBe("untrained");
+    expect(trainer.episodesCompleted).toBe(0);
+
+    const ctrl = new FlightController("mars", 2.2, "landing");
+    applyRLSpawnToController(ctrl, "earth", "landing", false, new SeededPRNG(9));
+    expect(ctrl.getTelemetry().padDeckY).toBeCloseTo(18.0, 5);
+    applyRLSpawnToController(ctrl, "moon", "landing", false, new SeededPRNG(9));
+    expect(ctrl.getTelemetry().padDeckY).toBeCloseTo(1.6, 5);
+  }, 15_000);
 });

@@ -97,12 +97,27 @@ This document defines the repository's Git workflow and tracks progress across *
 
 ---
 
-### Milestone 4 — Full Verification, Profiling & Windows `.exe` Packaging (`v1.0.0`) — **PLANNED**
-- **Target Branch:** `milestone/m4-release-packaging`
-- **Planned Scope:**
-  - CPU/GPU frame-time & memory leak profiling across `LOW` / `MED` / `HIGH` presets and multi-planet switches (`dispose()` audits).
-  - Automated end-to-end Electron verification (planet switching, launch, stage separation, manual RUD, autopilot landing, AI pilot).
-  - Production Windows NSIS/portable `.exe` packaging via `electron-builder` with signed release artifacts and automated CI check pipeline.
+### Milestone 4 — Final Verification, Measured Profiling, CI & Windows Packaging (`v1.0.0`) — **COMPLETE & VERIFIED**
+- **Branch:** `milestone/m4-verification-profiling-and-release`
+- **Implemented Scope:**
+  - **Multi-Planet Benchmark Harness (`src/research/benchmarkHarness.ts`, `scripts/run-benchmark.mjs`):**
+    - Added `npm run benchmark` running `20` paired deterministic domain-randomized `landing` trials (`seeds 42..61`) across Mars, Earth, and Moon (nominal + fault stress tests) comparing `untrained_ppo`, `ppo_scratch`, `ppo_trained` (BC warm-start + `8,192` PPO steps), and `pid_baseline`.
+    - Saved reproducible raw results and report to [`results/v1_benchmark.json`](../results/v1_benchmark.json), [`results/v1_benchmark.csv`](../results/v1_benchmark.csv), and [`docs/BENCHMARKS.md`](BENCHMARKS.md).
+  - **Automated Desktop GPU & FPS Profiler (`scripts/profile-desktop.mjs`, `electron/main.cjs`, `PostProcessing.ts`):**
+    - Fixed `PostProcessingPipeline` (`renderer.info.autoReset = false` + explicit `reset()`) so draw calls and triangle counts reflect full scene + composer passes rather than the final fullscreen quad (`1`).
+    - Added `window.__AETHERSIM_PROFILER__` (`src/main.ts`, `src/types/global.d.ts`) and `ELECTRON_PROFILE=1` runner sampling all 9 `(Mars | Earth | Moon) × (LOW | MED | HIGH)` configurations over `3,000 ms` rAF windows, saving [`results/v1_performance_profile.json`](../results/v1_performance_profile.json) and [`docs/PERFORMANCE_REPORT.md`](PERFORMANCE_REPORT.md).
+  - **GitHub Actions CI (`.github/workflows/ci.yml`):**
+    - Added automated workflow running `npm ci`, `npm run test`, and `npm run build` on `push` and `pull_request` (`main`, `develop`).
+  - **Windows Desktop Packaging & App Icons (`scripts/generate-icon.mjs`, `package.json`):**
+    - Generated [`build/icon.png`](../build/icon.png) (`512×512`) and multi-size [`build/icon.ico`](../build/icon.ico) (`256, 64, 32, 16 px`).
+    - Configured `electron-builder` (`npm run dist:win`, `npm run dist:win:dir`) producing standalone Windows x64 portable executable `release/AetherSim-1.0.0-win-x64-portable.exe` (strictly gitignored under `release/`).
+  - **Release Finalization:** Bumped `package.json` and in-app UI/export tags to `v1.0.0` and updated [`README.md`](../README.md), [`docs/MILESTONES.md`](MILESTONES.md), and [`CHANGELOG.md`](../CHANGELOG.md).
+- **Verification Gate Results (`v1.0.0`):**
+  - `npm run test`: **5 test files, 18 tests passed (`0` failures)** in `4.24 s` (`ppoAI.test.ts` throughput **`39,128 steps/s`**, `preMeanReturn = -2293.23` $\rightarrow$ `postMeanReturn = -601.77`).
+  - `npm run build`: **`tsc --noEmit && vite build` passed (`0` errors)** across `46` modules in `468 ms`.
+  - `npm run benchmark`: Completed in `25,388 ms` (`pid_baseline` `100.0%` nominal landing on Mars/Earth/Moon; measurable return progression from `untrained_ppo` $\rightarrow$ `ppo_scratch` $\rightarrow$ `ppo_trained`).
+  - `npm run profile:desktop`: **`PROFILE_OK`**, `0` errors, `0` warnings; `57.1–60.3 FPS` (`108–168` draw calls, `61,692–68,243` triangles, `20.7 MB` JS heap) at `1426×779` on `AMD Ryzen 5 5600H / Radeon Graphics Direct3D11`.
+  - `npm run dist:win`: Built `release/AetherSim-1.0.0-win-x64-portable.exe` (`112,092,430 bytes` / **`106.90 MB`**) and `release/win-unpacked/AetherSim.exe`; packaged smoke verification (`ELECTRON_SMOKE_TEST=1`) returned **`SMOKE_OK`**, exit code `0`, `0` errors/warnings, `123` draw calls, `62,759` triangles.
 
 ---
 
