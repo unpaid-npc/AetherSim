@@ -58,6 +58,23 @@ export interface PlanetTerrainParams {
   readonly padConcreteTint: string;
 }
 
+export interface PlanetScaleParams {
+  /** Verified NASA mean volumetric planetary radius (km). */
+  readonly realRadiusKm: number;
+  /** Interactive planetary scale divisor (1:50 keeps surface-to-orbit ascents ~40-90s). */
+  readonly simScaleRatio: number;
+  /** Simulated 3D globe radius in world meters (realRadiusKm * 1000 / simScaleRatio). */
+  readonly simRadiusM: number;
+  /** Altitude (m) where atmospheric sky fades smoothly to orbital vacuum. */
+  readonly atmosphereTopM: number;
+  /** Target parking orbit altitude above surface (m) for orbital mechanics. */
+  readonly targetOrbitAltM: number;
+  /** Geodetic launch site coordinates aligned cleanly with zenith (0, 0, 0). */
+  readonly launchSiteCoords: { readonly latDeg: number; readonly lonDeg: number };
+  /** Outer radius (m) of detailed procedural curved local terrain patch. */
+  readonly localTerrainRadiusM: number;
+}
+
 export interface PlanetConfig {
   readonly id: PlanetId;
   readonly name: string;
@@ -66,6 +83,7 @@ export interface PlanetConfig {
   readonly atmosphere: PlanetAtmosphereShaderParams;
   readonly lighting: PlanetLightingParams;
   readonly terrain: PlanetTerrainParams;
+  readonly scale: PlanetScaleParams;
 }
 
 export const PLANETS: Record<PlanetId, PlanetConfig> = {
@@ -116,6 +134,15 @@ export const PLANETS: Record<PlanetId, PlanetConfig> = {
       baseRoughness: 0.9,
       padConcreteTint: "#8e7d72",
     },
+    scale: {
+      realRadiusKm: 3389.5,
+      simScaleRatio: 50,
+      simRadiusM: 67_790,
+      atmosphereTopM: 18_000,
+      targetOrbitAltM: 22_000,
+      launchSiteCoords: { latDeg: 18.38, lonDeg: 77.58 },
+      localTerrainRadiusM: 24_000,
+    },
   },
   earth: {
     id: "earth",
@@ -164,6 +191,15 @@ export const PLANETS: Record<PlanetId, PlanetConfig> = {
       baseRoughness: 0.86,
       padConcreteTint: "#8a9096",
     },
+    scale: {
+      realRadiusKm: 6371.0,
+      simScaleRatio: 50,
+      simRadiusM: 127_420,
+      atmosphereTopM: 28_000,
+      targetOrbitAltM: 42_000,
+      launchSiteCoords: { latDeg: 25.997, lonDeg: -97.156 },
+      localTerrainRadiusM: 28_000,
+    },
   },
   moon: {
     id: "moon",
@@ -211,6 +247,15 @@ export const PLANETS: Record<PlanetId, PlanetConfig> = {
       dustColor: "#8b9099",
       baseRoughness: 0.94,
       padConcreteTint: "#777c84",
+    },
+    scale: {
+      realRadiusKm: 1737.4,
+      simScaleRatio: 50,
+      simRadiusM: 34_748,
+      atmosphereTopM: 0,
+      targetOrbitAltM: 14_000,
+      launchSiteCoords: { latDeg: -89.5, lonDeg: 0.0 },
+      localTerrainRadiusM: 15_000,
     },
   },
 };

@@ -1,9 +1,9 @@
 # AetherSim
 
-**AetherSim (`v1.0.1`)** is a real-time 3D aerospace launch, propulsive landing, live neural-network RL, and flight-research desktop simulator built with **Electron**, **Three.js**, **TypeScript**, **GLSL**, **GSAP**, and **Web Audio**.
+**AetherSim (`v1.1.0`)** is a real-time 3D aerospace launch, propulsive landing, spherical orbital-insertion, live neural-network RL, and flight-research desktop simulator built with **Electron**, **Three.js**, **TypeScript**, **GLSL**, **GSAP**, and **Web Audio**.
 
 > [!NOTE]
-> **Phase A Runnable Desktop Simulator (`v1.0.1`) vs. Phase B/C Ecosystem Architecture:** What runs today (`npm run desktop`, `npm run dist:win`) is the complete, verified **Phase A Desktop Simulator** covering **Milestones 1–4 + Hotfix `v1.0.1`** (`v0.2.0` → `v1.0.1`). The repository also documents a **14-Module Aerospace Simulation Ecosystem Reference Architecture** ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) guiding future Phases B & C. Every section below explicitly separates **implemented & verified** features from **planned** ecosystem work.
+> **Phase A Runnable Desktop Simulator (`v1.1.0`) vs. Phase B/C Ecosystem Architecture:** What runs today (`npm run desktop`, `npm run dist:win`) is the complete, verified **Phase A Desktop Simulator** covering **Milestones 1–5** (`v0.2.0` → `v1.1.0`). The repository also documents a **14-Module Aerospace Simulation Ecosystem Reference Architecture** ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) guiding future Phases B & C. Every section below explicitly separates **implemented & verified** features from **planned** ecosystem work.
 
 ---
 
@@ -35,18 +35,18 @@
 
 ---
 
-## Implemented & Verified Capabilities (`AetherSim v1.0.1`)
+## Implemented & Verified Capabilities (`AetherSim v1.1.0`)
 
-### 1. Multi-Planet Physics & Procedural Worlds (`src/config/planets.ts`, `src/scene/`)
-Three planetary launch & landing complexes parameterized with NASA Planetary Fact Sheet constants:
+### 1. Multi-Planet Physics, 1:50 Planet-Scale Globes & Surface-to-Space Transition (`src/config/planets.ts`, `src/scene/`)
+Three planetary launch & landing complexes parameterized with NASA Planetary Fact Sheet surface constants and `1:50` interactive planetary radii (`Moon: 34,748 m`, `Mars: 67,790 m`, `Earth: 127,420 m`) so surface-to-orbit ascents play smoothly in ~`175–275 s` real-time (or `18–28 s` at `10x` Time Warp):
 
-| World | Site / Complex | Surface Gravity | Surface Pressure | Near-Surface Density | Scale Height | Atmosphere / Environment |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Mars** | Jezero / Arcadia Launch Complex | `3.721 m/s²` | `0.00636 bar` | `0.020 kg/m³` | `11.1 km` | Thin CO₂ (`0.6%` Earth), ochre Rayleigh/Mie horizon, zenith stars |
-| **Earth** | Starbase Boca Chica Coastal Pad | `9.807 m/s²` | `1.01325 bar` | `1.225 kg/m³` | `8.5 km` | Dense N₂/O₂ (`1.01 bar`), Rayleigh sky + animated cloud dome |
-| **Moon** | Shackleton Crater South Pole | `1.625 m/s²` | `0.00000 bar` | `0.000 kg/m³` | `0.0 km` | Hard vacuum, pitch-black starfield, zero crosswind push |
+| World | Site / Complex | Surface Gravity | Surface Pressure | Near-Surface Density | Scale Height | `1:50` Radius / Target Orbit | Atmosphere / Global Geography |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Mars** | Jezero / Arcadia (`18.38° N, 77.58° E`) | `3.721 m/s²` | `0.00636 bar` | `0.020 kg/m³` | `11.1 km` | `67,790 m` / `22 km` | Thin CO₂ (`0.6%` Earth), Valles Marineris, Olympus Mons, polar ice caps |
+| **Earth** | Starbase Boca Chica (`25.997° N, 97.156° W`) | `9.807 m/s²` | `1.01325 bar` | `1.225 kg/m³` | `8.5 km` | `127,420 m` / `42 km` | Dense N₂/O₂ (`1.01 bar`), anti-aliased continents, oceans, cloud shell & night lights |
+| **Moon** | Shackleton South Pole (`89.5° S, 0.0° E`) | `1.625 m/s²` | `0.00000 bar` | `0.000 kg/m³` | `0.0 km` | `34,748 m` / `14 km` | Hard vacuum, lunar maria, Tycho/Copernicus ray craters, zenith stars |
 
-- **Radial-LOD PBR Terrain & Surface Maps (`TerrainSystem.ts`, `ProceduralTextures.ts`, `utils/noise.ts`)**: Deterministic seeded simplex/FBM/ridged/crater heightfield (`0–5,000 m` concentric rings + `38,000 m` curved horizon skirt, `65 m` flat launch apron, `220` instanced boulders) and canvas-generated PBR albedo/normal/roughness maps.
+- **Seamless Local-to-Globe Curvature & Real 4K Satellite Globes (`TerrainSystem.ts`, `PlanetGlobe.ts`, `PlanetGlobeTextures.ts`, `shaders/planetGlobeShader.ts`)**: Spherically curved radial-LOD terrain (`0–28 km` local horizon, `65 m` flat launch apron, `220` instanced boulders) tinted to the launch site's real RGB and radially feathered into zero-pinch icosahedral `4096×2048` NASA-derived satellite globes (Earth Blue Marble + Ocean Specular + City Lights + animated global clouds; Mars Viking/MOLA; Moon LROC WAC) with atmospheric Fresnel limb glow (`planetLimbShader.ts`) and Google-Earth-style `C5 ORBIT` zoom (`F5`). *(4K texture attribution: Solar System Scope CC-BY 4.0 NASA Visible Earth / Viking-MOLA / LROC datasets; see [`public/textures/planets/ATTRIBUTION.md`](public/textures/planets/ATTRIBUTION.md).)*
 - **Custom Sky Shaders & IBL (`shaders/atmosphereShader.ts`, `SceneManager.ts`)**: Rayleigh wavelength gradient, Henyey-Greenstein Mie forward scattering, dual-layer starfield, and live PMREM reflections for brushed stainless steel.
 
 ### 2. 1:1 Scale SpaceX Starship + Super Heavy Stack & Launch Complexes
@@ -58,8 +58,11 @@ Three planetary launch & landing complexes parameterized with NASA Planetary Fac
   - **Mars**: Octagonal sintered-regolith blast deck, servicing gantry, geodesic habitat & ISRU Sabatier propellant plant (`12` instanced solar panels), and centrifugal Mars Orbital Transfer Station.
   - **Moon**: Sintered landing pad with `360°` regolith blast berm, servicing gantry, Artemis-style pressurized surface outpost with vertical polar solar towers, and Lunar Gateway-inspired station.
 
-### 3. 60 Hz 6-DOF-Inspired Flight Engine, Explosions, Plumes & Post-Processing
-- **Flight Modes & Controls (`src/sim/FlightController.ts`)**: Strictly headless `60 Hz` (`dt = 1/60 s`) engine supporting `launch` (T-10s countdown, ascent, Max-Q, manual/auto hot-stage separation + detached booster ballistic coast/impact) and `landing` across `AI NEURAL`, `PID AUTO`, and `MANUAL` (`±15°` TVC gimbal, cold-gas RCS, `T` SAS angular damping).
+### 3. Spherical Central-Body Orbital Launch, Propulsive Landing, Explosions & Post-Processing
+- **Orbital Astrodynamics & 60 Hz Flight Engine (`src/sim/OrbitalMechanics.ts`, `src/sim/FlightController.ts`)**:
+  - **Spherical Central-Body Launch (`launch` mode):** Velocity-Verlet 2-body gravity ($\mu = g_0 R_{\text{sim}}^2$) around planet center `(0, -simRadiusM, 0)`, vacuum density cutoff above `atmosphereTopM`, `1x | 2x | 5x | 10x` Time Warp (`[` / `]`), live Keplerian elements (`Ap`, `Pe`, `e`, orbital velocity & period), and an end-to-end **`PID AUTO` Orbit Insertion Autopilot** (`COUNTDOWN` → `LIFTOFF` → `ASCENT` gravity turn → `STAGE_SEP` → `ORBIT_INSERTION` → `COAST_TO_AP` → `CIRCULARIZATION` → `ORBIT_ACHIEVED`).
+  - **3D Orbital Path Visualizer (`src/scene/OrbitVisualizer.ts`):** Toggleable (`PATH: ON/OFF`) dashed cyan Target Parking Orbit Ring, color-coded live Keplerian trajectory arc (amber suborbital / cyan transfer / emerald `ORBIT ACHIEVED`), adaptive spacecraft flight trail, constant-screen-size `SHIP`, `AP`, `PE`, and `PAD` markers, and dedicated **`C6 MAP` (`F6`)** orbital overview camera.
+  - **Propulsive Landing & Controls:** Deterministic `60 Hz` (`dt = 1/60 s`) landing dynamics and `AI NEURAL | PID AUTO | MANUAL` (`±15°` TVC gimbal, cold-gas RCS, `T` SAS angular damping) across all 3 worlds.
 - **Universal RUD & Verdict Classification**: Detects `LAUNCH_TOWER_COLLISION`, `AERO_OVERSTRESS` (`q > 45 kPa` at `AoA > 34°`), `SURFACE_IMPACT`, and `TIP_OVER`; classifies touchdowns as `NOMINAL LANDING`, `HARD LANDING`, or `CRASH_RUD`.
 - **GLSL Propulsive Plumes & Explosions (`shaders/exhaustShader.ts`, `PropulsionEffects.ts`, `ExplosionSystem.ts`, `PostProcessing.ts`)**:
   - Ambient-pressure-reactive Mach-diamond exhaust plumes, `128×128` multi-puff cryo/dust blast sprites, and cold-gas RCS cones.
@@ -79,21 +82,22 @@ Three planetary launch & landing complexes parameterized with NASA Planetary Fac
   3. **Fault Injection (`FaultInjector.ts`)**: Programmable thrust loss (`0–50%` at configurable altitude), density-scaled crosswind (`0–40 m/s`, strictly zero in Moon vacuum), IMU pitch/roll bias & noise via `getSensedTelemetry()`, and TVC lag toggle.
   4. **Monte Carlo Evaluator (`MonteCarloRunner.ts`)**: Off-thread `20 / 50 / 100`-run batch evaluator comparing `AI NEURAL` and `PID AUTO` with exact 95% Clopper-Pearson binomial confidence intervals.
   5. **Data Export (`DataExporter.ts`)**: One-click Flight Telemetry `.csv`, RL Training History `.csv`, and full reproducible Experiment Bundle `.json` export.
-- **Cinematography & Sound (`CameraDirector.ts`, `SoundEngine.ts`)**: GSAP camera presets (`C1 PAD`, `C2 DRONE`, `C3 ENGINE`, `C4 STATION`, `C5 ORBIT` / `F1–F5`) + `AUTO` director timeline, paired with zero-asset Web Audio synthesis (atmosphere-coupled Raptor roar, cryo hiss, RCS pulses, sub-bass RUD boom).
+- **Cinematography & Sound (`CameraDirector.ts`, `SoundEngine.ts`)**: GSAP camera presets (`C1 PAD`, `C2 DRONE`, `C3 ENGINE`, `C4 STATION`, `C5 ORBIT`, `C6 MAP` / `F1–F6`) + `AUTO` director timeline, paired with zero-asset Web Audio synthesis (atmosphere-coupled Raptor roar, cryo hiss, RCS pulses, sub-bass RUD boom).
 
 ---
 
-## Verified Build, Test & Packaging Checks (`v1.0.1`)
+## Verified Build, Test & Packaging Checks (`v1.1.0`)
 
-Measured directly on this repository for `v1.0.1`:
+Measured directly on this repository for `v1.1.0`:
 
 | Check | Command | Verified Result |
 | :--- | :--- | :--- |
-| **Vitest Unit, RL & Anti-Collapse Suite** | `npm run test` | **Passed (`5` files, `19` tests, `0` failures)** (`planets`, `noise`, `flightController`, `researchWorkbench`, `ppoAI`: Pure PPO `42,707 steps/s` `-2293.23 → -601.77`; Earth landing warm-start `100%` safe / `60%` nominal before & after `4,096` PPO steps) |
-| **TypeCheck & Vite Production Build** | `npm run build` | **Passed (`0` errors)**; `47` modules transformed in `429 ms` (`dist/index.html`, `ppoWorker-CSJhRYmj.js` `65.22 kB`, `index-BDzgi-GZ.js` `891.44 kB`, `index-CKffavab.css` `9.83 kB`) |
+| **Vitest Unit, Orbital & RL Suite** | `npm run test` | **Passed (`7` files, `27` tests, `0` failures)** (`planets`, `noise`, `planetScale`, `orbitalMechanics`, `flightController`, `researchWorkbench`, `ppoAI`: 3-planet launch-to-orbit circularization `Mars Ap=22.35km/Pe=19.00km/e=0.0189`, `Earth Ap=41.80km/Pe=35.61km/e=0.0186`, `Moon Ap=22.14km/Pe=13.57km/e=0.0815`; Earth landing warm-start `100%` safe / `60%` nominal) |
+| **TypeCheck & Vite Production Build** | `npm run build` | **Passed (`0` errors)**; `53` modules transformed in `560 ms` (`dist/index.html`, `ppoWorker-BLuphEl-.js` `73.21 kB`, `index-DgpBH_pl.js` `952.13 kB`, `index-DMBfzP0s.css` `10.00 kB`) |
 | **GitHub Actions CI** | `.github/workflows/ci.yml` | Runs `npm ci`, `npm run test`, and `npm run build` on `push` / `pull_request` (`main`, `develop`) |
-| **Electron Desktop Smoke Check** | `node scripts/launch-desktop.mjs --prod --smoke-test` | **`SMOKE_OK`**, exit code `0`, `0` errors, `0` warnings, title `"AetherSim — 3D Aerospace Launch & Landing Simulator"`, **`version: "1.0.1"`**, `1426×779`, `123` draw calls, `62,759` triangles |
-| **Windows Portable Desktop Build** | `npm run dist:win` | Packaged & smoke-verified `AetherSim-1.0.0-win-x64-portable.exe` (`112,092,430 bytes` / **`106.90 MB`**) in `v1.0.0`; rebuild `v1.0.1` portable `.exe` anytime via `npm run dist:win` |
+| **Electron Dev Desktop Smoke Check** | `node scripts/launch-desktop.mjs --smoke-test` | **`SMOKE_OK`**, `bootMs: 261 ms`, `hudChildren: 4`, `1426×779`, `24 FPS`, `124` draw calls, `70,551` triangles, `canvasNonBlackPct: 100%`, **`version: "1.1.0"`**, `0` errors |
+| **Electron Prod Desktop Smoke Check** | `node scripts/launch-desktop.mjs --prod --smoke-test` | **`SMOKE_OK`**, `bootMs: 260 ms`, `hudChildren: 4`, `1426×779`, `24 FPS`, `124` draw calls, `70,551` triangles, `canvasNonBlackPct: 100%`, **`version: "1.1.0"`**, `0` errors |
+| **Windows Portable Desktop Build** | `npm run dist:win` | Packaged & smoke-verified `AetherSim-1.0.0-win-x64-portable.exe` (`106.90 MB`) in `v1.0.0`; rebuild `v1.1.0` portable `.exe` anytime via `npm run dist:win` |
 
 ---
 
@@ -169,7 +173,8 @@ npm install
 | `T` | Toggle SAS angular damping (`ON` / `OFF`) |
 | `W` / `Shift` & `S` / `Ctrl` | Manual throttle up / down (`Z` / `X` for instant `100%` / `0%`) |
 | `Arrows` or `I / J / K / L`, `Q / E` | Manual Pitch/Tilt TVC & Roll/Yaw RCS commands |
-| `F1–F5` / `V` | Switch cameras (`C1 PAD`, `C2 DRONE`, `C3 ENGINE`, `C4 STATION`, `C5 ORBIT`) / toggle `AUTO` director |
+| `F1–F6` / `V` | Switch cameras (`C1 PAD`, `C2 DRONE`, `C3 ENGINE`, `C4 STATION`, `C5 ORBIT`, `C6 MAP`) / toggle `AUTO` director |
+| `[` / `]` | Step Physics Time Warp (`1x` / `2x` / `5x` / `10x`) |
 | `M` | Toggle Web Audio mute (`UNMUTED` / `MUTED`) |
 
 ---
@@ -182,8 +187,8 @@ Milestone 0 (`v0.1.0`) remains preserved under [`archive/legacy-rl-2d/`](archive
 
 ## Limitations & Simulation Fidelity Disclaimer
 
-AetherSim `v1.0.1` is a **real-time interactive engineering, visualization, and RL research simulator (Phase A)**, **not a flight-qualified verification tool**:
-- **Simplified Flight Dynamics**: Uses a local-tangent-plane rigid-body 6-DOF-inspired integrator (`FlightController.ts`) rather than spherical rotating-planet orbital mechanics, coupled propellant slosh, or flexible-body structural modes.
+AetherSim `v1.1.0` is a **real-time interactive engineering, visualization, and RL research simulator (Phase A)**, **not a flight-qualified verification tool**:
+- **Interactive 1:50 Planetary Scale & 2-Body Orbital Mechanics**: `launch` mode integrates spherical non-rotating 2-body central-body gravity ($\mu = g_0 R_{\text{sim}}^2$) around `1:50`-scaled planets (`Earth 127.4 km`, `Mars 67.8 km`, `Moon 34.7 km`) alongside NASA surface gravity and atmospheric constants so surface-to-orbit ascents play interactively in real time; `landing` mode retains local-tangent dynamics around the pad. Coupled propellant slosh, flexible-body structural modes, and J2/N-body perturbations are deferred to Phase B.
 - **Real-Time Shader Approximations**: GLSL Mach-diamond plumes, Schlieren shimmer, and Rayleigh/Mie skies are visually physically inspired approximations—not Navier-Stokes CFD, DSMC rarefied gas dynamics, or thermal FEA.
 - **No Flight Certification**: The software has **not** undergone DO-178C, NPR 7150.2, NASA-STD-7009 formal VVUQ, HIL qualification, or AFSS range-safety certification and **must never be used for operational flight decisions**.
 

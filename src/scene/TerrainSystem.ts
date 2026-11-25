@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { PlanetConfig } from "../config/planets";
-import { SeededNoise2D, samplePlanetTerrainHeight } from "../utils/noise";
+import { SeededNoise2D, samplePlanetTerrainHeight, smoothstep } from "../utils/noise";
+import { getDefaultSiteTintColor } from "./PlanetGlobeTextures";
 import {
   type PbrTextureSet,
   disposeTextureSet,
@@ -13,17 +14,53 @@ interface RingSpec {
   readonly thetaSegments: number;
   readonly radialSegments: number;
   readonly receiveShadow: boolean;
+  readonly isOuterFeather: boolean;
 }
-
-const RING_SPECS: readonly RingSpec[] = [
-  { innerRadius: 0, outerRadius: 280, thetaSegments: 128, radialSegments: 48, receiveShadow: true },
-  { innerRadius: 280, outerRadius: 1450, thetaSegments: 128, radialSegments: 40, receiveShadow: false },
-  { innerRadius: 1450, outerRadius: 5000, thetaSegments: 128, radialSegments: 28, receiveShadow: false },
-];
 
 const BOULDER_COUNT = 220;
 
-function buildRadialRingGeometry(spec: RingSpec): THREE.BufferGeometry {
+function getRingSpecs(localTerrainRadiusM: number): readonly RingSpec[] {
+  return [
+    {
+      innerRadius: 0,
+      outerRadius: 300,
+      thetaSegments: 128,
+      radialSegments: 44,
+      receiveShadow: true,
+      isOuterFeather: false,
+    },
+    {
+      innerRadius: 300,
+      outerRadius: 1800,
+      thetaSegments: 128,
+      radialSegments: 36,
+      receiveShadow: false,
+      isOuterFeather: false,
+    },
+    {
+      innerRadius: 1800,
+      outerRadius: 5000,
+      thetaSegments: 128,
+      radialSegments: 26,
+      receiveShadow: false,
+      isOuterFeather: false,
+    },
+    {
+      innerRadius: 5000,
+      outerRadius: Math.max(9000, localTerrainRadiusM),
+      thetaSegments: 128,
+      radialSegments: 28,
+      receiveShadow: false,
+      isOuterFeather: true,
+    },
+  ];
+}
+
+function buildRadialRingGeometry(
+  spec: RingSpec,
+  config: PlanetConfig,
+  noise: SeededNoise2D
+): THREE.BufferGeometry {
   const { innerRadius, outerRadius, thetaSegments, radialSegments } = spec;
   const cols = thetaSegments + 1;
   const rows = radialSegments + 1;
@@ -34,22 +71,27 @@ function buildRadialRingGeometry(spec: RingSpec): THREE.BufferGeometry {
   const uvs = new Float32Array(vertCount * 2);
   const indices: number[] = [];
 
+  const localR = config.scale.localTerrainRadiusM;
+
   for (let rIdx = 0; rIdx < rows; rIdx++) {
     const t = rIdx / radialSegments;
-    // Slight quadratic bias concentrates vertices near the inner boundary of each ring
     const radius =
       innerRadius === 0
-        ? outerRadius * Math.pow(t, 1.3)
-        : innerRadius + (outerRadius - innerRadius) * Math.pow(t, 1.25);
+        ? outerRadius * Math.pow(t, 1.32)
+        : innerRadius + (outerRadius - innerRadius) * Math.pow(t, 1.24);
+
+    // Gentle -32m outer rim tuck matching the globe's -35m recess so there is zero gap
+    const rimTuck = smoothstep(localR * 0.82, localR, radius) * 32;
 
     for (let aIdx = 0; aIdx < cols; aIdx++) {
       const theta = (aIdx / thetaSegments) * Math.PI * 2;
       const x = Math.cos(theta) * radius;
       const z = Math.sin(theta) * radius;
+      const y = samplePlanetTerrainHeight(x, z, config, noise) - rimTuck;
 
       const vIdx = rIdx * cols + aIdx;
       positions[vIdx * 3] = x;
-      positions[vIdx * 3 + 1] = 0;
+      positions[vIdx * 3 + 1] = y;
       positions[vIdx * 3 + 2] = z;
 
       normals[vIdx * 3] = 0;
@@ -77,104 +119,90 @@ function buildRadialRingGeometry(spec: RingSpec): THREE.BufferGeometry {
   geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
   geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
   geom.setIndex(indices);
-  return geom;
-}
-
-function buildHorizonSkirtGeometry(): THREE.BufferGeometry {
-  // Sweeping planetary curvature apron extending from r=4950m out to r=38000m
-  const innerR = 4950;
-  const outerR = 38000;
-  const thetaSegs = 128;
-  const radialSegs = 14;
-  const cols = thetaSegs + 1;
-  const rows = radialSegs + 1;
-  const positions = new Float32Array(cols * rows * 3);
-  const normals = new Float32Array(cols * rows * 3);
-  const uvs = new Float32Array(cols * rows * 2);
-  const indices: number[] = [];
-
-  for (let rIdx = 0; rIdx < rows; rIdx++) {
-    const t = rIdx / radialSegs;
-    const radius = innerR + (outerR - innerR) * Math.pow(t, 1.45);
-    // Gentle planetary curvature drop (-0.000018 * r^2) so high altitude shows a curved horizon
-    const dropY = -Math.pow(Math.max(0, radius - innerR), 1.42) * 0.00052;
-    for (let aIdx = 0; aIdx < cols; aIdx++) {
-      const theta = (aIdx / thetaSegs) * Math.PI * 2;
-      const x = Math.cos(theta) * radius;
-      const z = Math.sin(theta) * radius;
-      const vIdx = rIdx * cols + aIdx;
-      positions[vIdx * 3] = x;
-      positions[vIdx * 3 + 1] = dropY;
-      positions[vIdx * 3 + 2] = z;
-      normals[vIdx * 3] = 0;
-      normals[vIdx * 3 + 1] = 1;
-      normals[vIdx * 3 + 2] = 0;
-      uvs[vIdx * 2] = x / 450;
-      uvs[vIdx * 2 + 1] = z / 450;
-    }
-  }
-  for (let rIdx = 0; rIdx < radialSegs; rIdx++) {
-    for (let aIdx = 0; aIdx < thetaSegs; aIdx++) {
-      const a = rIdx * cols + aIdx;
-      const b = (rIdx + 1) * cols + aIdx;
-      const c = (rIdx + 1) * cols + (aIdx + 1);
-      const d = rIdx * cols + (aIdx + 1);
-      indices.push(a, d, b);
-      indices.push(b, d, c);
-    }
-  }
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-  geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
-  geom.setIndex(indices);
   geom.computeVertexNormals();
+  geom.computeBoundingSphere();
   return geom;
 }
 
-/** Manages multi-ring procedural terrain, planetary horizon skirt, and instanced boulders. */
+/**
+ * Manages expansive spherically curved radial-LOD terrain with radial edge feathering
+ * and satellite site-color tinting so it cross-fades invisibly into the 4K PlanetGlobe.
+ */
 export class TerrainSystem {
   public readonly group = new THREE.Group();
 
-  private readonly ringMeshes: THREE.Mesh[] = [];
-  private readonly terrainMaterial: THREE.MeshStandardMaterial;
+  private ringMeshes: Array<{ mesh: THREE.Mesh; isOuter: boolean }> = [];
+  private readonly innerTerrainMaterial: THREE.MeshStandardMaterial;
+  private readonly outerTerrainMaterial: THREE.MeshStandardMaterial;
+  private readonly outerUniforms: {
+    uSatelliteTint: { value: THREE.Color };
+    uFeatherInner: { value: number };
+    uFeatherOuter: { value: number };
+  };
   private terrainTextures: PbrTextureSet | null = null;
-
-  private readonly horizonGeom: THREE.BufferGeometry;
-  private readonly horizonMat: THREE.MeshStandardMaterial;
-  private readonly horizonMesh: THREE.Mesh;
 
   private readonly boulderGeometry: THREE.DodecahedronGeometry;
   private readonly boulderMaterial: THREE.MeshStandardMaterial;
   private readonly boulderMesh: THREE.InstancedMesh;
 
+  private activeConfig: PlanetConfig;
+  private activeNoise: SeededNoise2D;
+
   constructor(initialConfig: PlanetConfig, maxAnisotropy: number) {
-    this.terrainMaterial = new THREE.MeshStandardMaterial({
+    this.activeConfig = initialConfig;
+    this.activeNoise = new SeededNoise2D(initialConfig.terrain.seed);
+
+    this.innerTerrainMaterial = new THREE.MeshStandardMaterial({
       color: "#ffffff",
       metalness: 0.04,
       roughness: initialConfig.terrain.baseRoughness,
       normalScale: new THREE.Vector2(1.0, 1.0),
     });
 
-    for (const spec of RING_SPECS) {
-      const geom = buildRadialRingGeometry(spec);
-      const mesh = new THREE.Mesh(geom, this.terrainMaterial);
-      mesh.receiveShadow = spec.receiveShadow;
-      mesh.castShadow = false;
-      this.ringMeshes.push(mesh);
-      this.group.add(mesh);
-    }
+    this.outerUniforms = {
+      uSatelliteTint: { value: getDefaultSiteTintColor(initialConfig.id) },
+      uFeatherInner: { value: 5000.0 },
+      uFeatherOuter: { value: initialConfig.scale.localTerrainRadiusM * 0.96 },
+    };
 
-    this.horizonGeom = buildHorizonSkirtGeometry();
-    this.horizonMat = new THREE.MeshStandardMaterial({
-      color: initialConfig.terrain.soilPalette[0],
+    this.outerTerrainMaterial = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      transparent: true,
+      depthWrite: false,
+      metalness: 0.04,
       roughness: initialConfig.terrain.baseRoughness,
-      metalness: 0.03,
+      normalScale: new THREE.Vector2(1.0, 1.0),
     });
-    this.horizonMesh = new THREE.Mesh(this.horizonGeom, this.horizonMat);
-    this.horizonMesh.castShadow = false;
-    this.horizonMesh.receiveShadow = false;
-    this.group.add(this.horizonMesh);
+    this.outerTerrainMaterial.customProgramCacheKey = () => "aethersim-outer-terrain-feather-v1";
+    this.outerTerrainMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.uSatelliteTint = this.outerUniforms.uSatelliteTint;
+      shader.uniforms.uFeatherInner = this.outerUniforms.uFeatherInner;
+      shader.uniforms.uFeatherOuter = this.outerUniforms.uFeatherOuter;
+
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying float vRadialDist;"
+        )
+        .replace(
+          "#include <begin_vertex>",
+          "#include <begin_vertex>\nvRadialDist = length(transformed.xz);"
+        );
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nuniform vec3 uSatelliteTint;\nuniform float uFeatherInner;\nuniform float uFeatherOuter;\nvarying float vRadialDist;"
+        )
+        .replace(
+          "#include <color_fragment>",
+          `#include <color_fragment>
+          float radialTintT = smoothstep(uFeatherInner, uFeatherOuter * 0.80, vRadialDist);
+          diffuseColor.rgb = mix(diffuseColor.rgb, uSatelliteTint, radialTintT * 0.88);
+          float radialAlpha = 1.0 - smoothstep(uFeatherInner, uFeatherOuter, vRadialDist);
+          diffuseColor.a *= radialAlpha;`
+        );
+    };
 
     this.boulderGeometry = new THREE.DodecahedronGeometry(1.0, 0);
     this.boulderMaterial = new THREE.MeshStandardMaterial({
@@ -195,33 +223,73 @@ export class TerrainSystem {
     this.updatePlanet(initialConfig, maxAnisotropy);
   }
 
-  updatePlanet(config: PlanetConfig, maxAnisotropy: number): void {
-    const noise = new SeededNoise2D(config.terrain.seed);
+  getTerrainHeight(x: number, z: number): number {
+    return samplePlanetTerrainHeight(x, z, this.activeConfig, this.activeNoise);
+  }
 
-    for (const mesh of this.ringMeshes) {
-      const posAttr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
-      for (let i = 0; i < posAttr.count; i++) {
-        const x = posAttr.getX(i);
-        const z = posAttr.getZ(i);
-        const y = samplePlanetTerrainHeight(x, z, config, noise);
-        posAttr.setY(i, y);
+  /** Tints the outer feather skirt to match the real RGB sampled from the 4K satellite map. */
+  setSatelliteSiteTint(color: THREE.Color): void {
+    this.outerUniforms.uSatelliteTint.value.copy(color);
+  }
+
+  setVisibilityForCameraAltitude(camAltM: number, _simRadiusM: number): void {
+    this.boulderMesh.visible = camAltM < 2800;
+    const fade = 1 - smoothstep(2500, 10000, camAltM);
+    if (fade <= 0.005) {
+      for (const { mesh } of this.ringMeshes) {
+        mesh.visible = false;
       }
-      posAttr.needsUpdate = true;
-      mesh.geometry.computeVertexNormals();
-      mesh.geometry.computeBoundingSphere();
+      return;
+    }
+
+    const isBlending = fade < 0.995;
+    this.innerTerrainMaterial.transparent = isBlending;
+    this.innerTerrainMaterial.opacity = isBlending ? fade : 1.0;
+    this.innerTerrainMaterial.depthWrite = !isBlending;
+
+    this.outerTerrainMaterial.opacity = fade;
+
+    for (const { mesh } of this.ringMeshes) {
+      mesh.visible = true;
+    }
+  }
+
+  updatePlanet(config: PlanetConfig, maxAnisotropy: number): void {
+    this.activeConfig = config;
+    const noise = new SeededNoise2D(config.terrain.seed);
+    this.activeNoise = noise;
+
+    this.outerUniforms.uSatelliteTint.value.copy(getDefaultSiteTintColor(config.id));
+    this.outerUniforms.uFeatherInner.value = 5000.0;
+    this.outerUniforms.uFeatherOuter.value = config.scale.localTerrainRadiusM * 0.96;
+
+    for (const old of this.ringMeshes) {
+      this.group.remove(old.mesh);
+      old.mesh.geometry.dispose();
+    }
+    this.ringMeshes = [];
+
+    const specs = getRingSpecs(config.scale.localTerrainRadiusM);
+    for (const spec of specs) {
+      const geom = buildRadialRingGeometry(spec, config, noise);
+      const mat = spec.isOuterFeather ? this.outerTerrainMaterial : this.innerTerrainMaterial;
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.receiveShadow = spec.receiveShadow;
+      mesh.castShadow = false;
+      this.ringMeshes.push({ mesh, isOuter: spec.isOuterFeather });
+      this.group.add(mesh);
     }
 
     const nextTerrainTex = generatePlanetTextureSet(config, maxAnisotropy);
-    this.terrainMaterial.map = nextTerrainTex.albedoMap;
-    this.terrainMaterial.normalMap = nextTerrainTex.normalMap;
-    this.terrainMaterial.roughnessMap = nextTerrainTex.roughnessMap;
-    this.terrainMaterial.roughness = config.terrain.baseRoughness;
-    this.terrainMaterial.needsUpdate = true;
+    for (const mat of [this.innerTerrainMaterial, this.outerTerrainMaterial]) {
+      mat.map = nextTerrainTex.albedoMap;
+      mat.normalMap = nextTerrainTex.normalMap;
+      mat.roughnessMap = nextTerrainTex.roughnessMap;
+      mat.roughness = config.terrain.baseRoughness;
+      mat.needsUpdate = true;
+    }
     disposeTextureSet(this.terrainTextures);
     this.terrainTextures = nextTerrainTex;
-
-    this.horizonMat.color.set(config.terrain.soilPalette[0]);
-    this.horizonMat.roughness = config.terrain.baseRoughness;
 
     this.updateBoulders(config, noise);
   }
@@ -235,7 +303,6 @@ export class TerrainSystem {
     const c0 = new THREE.Color(config.terrain.soilPalette[0]);
     const c2 = new THREE.Color(config.terrain.soilPalette[2]);
 
-    // Deterministic boulder scatter outside r > 76 m
     let state = (config.terrain.seed ^ 0x9e3779b9) >>> 0;
     const rand = (): number => {
       state = (state + 0x6d2b79f5) | 0;
@@ -272,15 +339,14 @@ export class TerrainSystem {
   }
 
   dispose(): void {
-    for (const mesh of this.ringMeshes) {
-      mesh.geometry.dispose();
+    for (const item of this.ringMeshes) {
+      item.mesh.geometry.dispose();
     }
-    this.terrainMaterial.dispose();
+    this.ringMeshes = [];
+    this.innerTerrainMaterial.dispose();
+    this.outerTerrainMaterial.dispose();
     disposeTextureSet(this.terrainTextures);
     this.terrainTextures = null;
-
-    this.horizonGeom.dispose();
-    this.horizonMat.dispose();
 
     this.boulderGeometry.dispose();
     this.boulderMaterial.dispose();

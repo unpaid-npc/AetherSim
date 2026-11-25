@@ -22,6 +22,8 @@ uniform vec3 uHorizonColor;
 uniform vec3 uSunColor;
 uniform float uSunIntensity;
 uniform float uStarIntensity;
+uniform float uCameraAltitude;
+uniform float uAtmosphereTop;
 
 varying vec3 vWorldDir;
 
@@ -54,6 +56,12 @@ void main() {
   vec3 dir = normalize(vWorldDir);
   vec3 sunDir = normalize(uSunDirection);
 
+  float spaceT = uAtmosphereTop > 1.0
+    ? smoothstep(0.0, uAtmosphereTop, uCameraAltitude)
+    : 1.0;
+  float effAtmo = uAtmosphereStrength * pow(1.0 - spaceT, 1.45);
+  float effStarIntensity = mix(uStarIntensity, 1.0, smoothstep(0.15, 0.72, spaceT));
+
   float elevation = clamp(dir.y, -0.15, 1.0);
   float up = max(elevation, 0.0);
   float horizonFactor = pow(1.0 - up, 3.2);
@@ -62,23 +70,24 @@ void main() {
   // Base atmospheric gradient + Rayleigh-inspired wavelength balance
   vec3 skyBase = mix(uZenithColor, uHorizonColor, horizonFactor);
   vec3 rayleighScatter = uRayleighCoeff * (0.28 + 0.72 * horizonFactor) * (1.0 - 0.45 * zenithFactor);
-  vec3 atmosphereCol = mix(skyBase, skyBase + rayleighScatter * 0.55, uAtmosphereStrength);
+  vec3 atmosphereCol = mix(skyBase, skyBase + rayleighScatter * 0.55, effAtmo);
 
   // Henyey-Greenstein Mie forward scattering
   float cosTheta = clamp(dot(dir, sunDir), -1.0, 1.0);
   float g2 = uMieG * uMieG;
   float phase = (1.0 - g2) / (4.0 * 3.14159265 * pow(max(0.001, 1.0 + g2 - 2.0 * uMieG * cosTheta), 1.5));
-  vec3 mieScatter = uSunColor * (uMieCoeff * phase * uAtmosphereStrength * (0.35 + 0.65 * horizonFactor));
+  vec3 mieScatter = uSunColor * (uMieCoeff * phase * effAtmo * (0.35 + 0.65 * horizonFactor));
 
   // Crisp solar disc + subtle corona glare
   float sunCos = max(cosTheta, 0.0);
   float sunDisc = smoothstep(0.99935, 0.99982, cosTheta);
-  float sunHalo = pow(sunCos, 96.0) * 0.35 + pow(sunCos, 8.0) * (0.04 + 0.14 * uAtmosphereStrength);
+  float sunHalo = pow(sunCos, 96.0) * 0.35 + pow(sunCos, 8.0) * (0.04 + 0.14 * effAtmo);
   vec3 sunLight = uSunColor * (sunDisc * uSunIntensity + sunHalo);
 
-  // Procedural starfield (brightest in vacuum / Mars zenith; suppressed by bright sky)
-  float skyLuma = dot(atmosphereCol, vec3(0.299, 0.587, 0.114));
-  float starMask = smoothstep(-0.02, 0.25, dir.y) * clamp(1.0 - skyLuma * 2.4, 0.0, 1.0) * uStarIntensity;
+  // 360-degree starfield in deep space; suppressed near bright daytime ground horizon
+  float skyLuma = dot(atmosphereCol, vec3(0.299, 0.587, 0.114)) * (1.0 - spaceT * 0.92);
+  float horizonStarMask = mix(smoothstep(-0.02, 0.25, dir.y), 1.0, smoothstep(0.15, 0.55, spaceT));
+  float starMask = horizonStarMask * clamp(1.0 - skyLuma * 2.4, 0.0, 1.0) * effStarIntensity;
   float stars = 0.0;
   if (starMask > 0.005) {
     stars += starLayer(dir, 145.0, 0.986) * 1.15;
@@ -86,11 +95,13 @@ void main() {
   }
   vec3 starCol = vec3(0.92, 0.95, 1.0) * stars * starMask;
 
-  // Below horizon subtle ground bounce darkening
-  vec3 col = atmosphereCol * uAtmosphereStrength + uZenithColor * (1.0 - uAtmosphereStrength) + mieScatter + sunLight + starCol;
+  vec3 spaceZenith = vec3(0.004, 0.006, 0.014);
+  vec3 activeZenith = mix(uZenithColor, spaceZenith, spaceT);
+  vec3 col = atmosphereCol * effAtmo + activeZenith * (1.0 - effAtmo) + mieScatter + sunLight + starCol;
+
   if (dir.y < 0.0) {
-    float below = smoothstep(0.0, -0.15, dir.y);
-    col = mix(col, uHorizonColor * (0.35 * uAtmosphereStrength + 0.05), below);
+    float below = smoothstep(0.0, -0.15, dir.y) * (1.0 - spaceT);
+    col = mix(col, uHorizonColor * (0.35 * effAtmo + 0.05), below);
   }
 
   gl_FragColor = vec4(col, 1.0);
@@ -109,6 +120,7 @@ void main() {
 const CLOUD_FRAGMENT_SHADER = /* glsl */ `
 uniform float uTime;
 uniform vec3 uSunColor;
+uniform float uCloudOpacity;
 varying vec3 vDir;
 
 float hash21(vec2 p) {
@@ -140,7 +152,7 @@ float fbm(vec2 p) {
 }
 
 void main() {
-  if (vDir.y < 0.04) {
+  if (vDir.y < 0.04 || uCloudOpacity <= 0.01) {
     discard;
   }
   vec2 uv = vDir.xz / (vDir.y + 0.22);
@@ -148,7 +160,7 @@ void main() {
   float n = fbm(uv * 1.45 + drift);
   float density = smoothstep(0.52, 0.78, n);
   float horizonFade = smoothstep(0.04, 0.28, vDir.y);
-  float alpha = density * horizonFade * 0.42;
+  float alpha = density * horizonFade * 0.42 * uCloudOpacity;
   if (alpha < 0.01) {
     discard;
   }
@@ -157,7 +169,7 @@ void main() {
 }
 `;
 
-/** Manages the procedural Rayleigh/Mie sky dome and Earth cloud layer. */
+/** Manages the altitude-responsive Rayleigh/Mie sky dome and local Earth cloud layer. */
 export class AtmosphereDome {
   public readonly group = new THREE.Group();
   private readonly skyGeometry: THREE.SphereGeometry;
@@ -168,12 +180,15 @@ export class AtmosphereDome {
   private readonly cloudMaterial: THREE.ShaderMaterial;
   private readonly cloudMesh: THREE.Mesh;
 
+  private hasClouds = false;
+
   constructor(initialConfig: PlanetConfig) {
-    this.skyGeometry = new THREE.SphereGeometry(48000, 48, 32);
+    this.skyGeometry = new THREE.SphereGeometry(5000, 48, 32);
     this.skyMaterial = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
       fragmentShader: SKY_FRAGMENT_SHADER,
       side: THREE.BackSide,
+      depthTest: false,
       depthWrite: false,
       fog: false,
       uniforms: {
@@ -187,35 +202,39 @@ export class AtmosphereDome {
         uSunColor: { value: new THREE.Color("#ffffff") },
         uSunIntensity: { value: 20.0 },
         uStarIntensity: { value: 0.0 },
+        uCameraAltitude: { value: 0.0 },
+        uAtmosphereTop: { value: 28000.0 },
       },
     });
     this.skyMesh = new THREE.Mesh(this.skyGeometry, this.skyMaterial);
     this.skyMesh.frustumCulled = false;
-    this.skyMesh.renderOrder = -2;
+    this.skyMesh.renderOrder = -100;
 
-    this.cloudGeometry = new THREE.SphereGeometry(38000, 36, 20);
+    this.cloudGeometry = new THREE.SphereGeometry(4200, 36, 20);
     this.cloudMaterial = new THREE.ShaderMaterial({
       vertexShader: CLOUD_VERTEX_SHADER,
       fragmentShader: CLOUD_FRAGMENT_SHADER,
       side: THREE.BackSide,
       transparent: true,
+      depthTest: false,
       depthWrite: false,
       fog: false,
       uniforms: {
         uTime: { value: 0.0 },
         uSunColor: { value: new THREE.Color("#fff6e5") },
+        uCloudOpacity: { value: 1.0 },
       },
     });
     this.cloudMesh = new THREE.Mesh(this.cloudGeometry, this.cloudMaterial);
     this.cloudMesh.frustumCulled = false;
-    this.cloudMesh.renderOrder = -1;
+    this.cloudMesh.renderOrder = -99;
 
     this.group.add(this.skyMesh, this.cloudMesh);
     this.updatePlanet(initialConfig);
   }
 
   updatePlanet(config: PlanetConfig): void {
-    const { atmosphere } = config;
+    const { atmosphere, scale } = config;
     const u = this.skyMaterial.uniforms;
     (u.uSunDirection.value as THREE.Vector3)
       .set(atmosphere.sunDirection[0], atmosphere.sunDirection[1], atmosphere.sunDirection[2])
@@ -233,16 +252,34 @@ export class AtmosphereDome {
     (u.uSunColor.value as THREE.Color).set(atmosphere.sunColor);
     u.uSunIntensity.value = atmosphere.sunIntensity;
     u.uStarIntensity.value = atmosphere.starIntensity;
+    u.uAtmosphereTop.value = scale.atmosphereTopM;
 
+    this.hasClouds = atmosphere.hasClouds;
     (this.cloudMaterial.uniforms.uSunColor.value as THREE.Color).set(atmosphere.sunColor);
     this.cloudMesh.visible = atmosphere.hasClouds;
   }
 
-  update(dt: number, cameraPosition: THREE.Vector3): void {
+  update(
+    dt: number,
+    cameraPosition: THREE.Vector3,
+    cameraAltitudeM = 0,
+    atmosphereTopM = this.skyMaterial.uniforms.uAtmosphereTop.value as number
+  ): void {
     this.group.position.copy(cameraPosition);
-    if (this.cloudMesh.visible) {
-      this.cloudMaterial.uniforms.uTime.value =
-        (this.cloudMaterial.uniforms.uTime.value as number) + dt;
+    this.skyMaterial.uniforms.uCameraAltitude.value = cameraAltitudeM;
+    this.skyMaterial.uniforms.uAtmosphereTop.value = atmosphereTopM;
+
+    if (this.hasClouds) {
+      const t = Math.max(0, Math.min(1, (cameraAltitudeM - 1500) / 2300));
+      const localCloudFade = 1 - t * t * (3 - 2 * t);
+      this.cloudMaterial.uniforms.uCloudOpacity.value = localCloudFade;
+      this.cloudMesh.visible = localCloudFade > 0.01;
+      if (this.cloudMesh.visible) {
+        this.cloudMaterial.uniforms.uTime.value =
+          (this.cloudMaterial.uniforms.uTime.value as number) + dt;
+      }
+    } else {
+      this.cloudMesh.visible = false;
     }
   }
 
