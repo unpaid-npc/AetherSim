@@ -185,8 +185,32 @@ export class SeededNoise2D {
 }
 
 /**
- * Sample deterministic planetary terrain height at world (x, z) meters.
- * Guarantees strictly 0.0 inside ``r <= 65 m`` so the launchpad apron sits flush.
+ * Exact spherical planetary surface vertical drop at horizontal distance `r` (m)
+ * from the tangent zenith point on a sphere of radius `simRadiusM` (m).
+ */
+export function computeSphereDrop(r: number, simRadiusM: number): number {
+  if (r <= 0 || simRadiusM <= 0) {
+    return 0;
+  }
+  const clampedR = Math.min(r, simRadiusM);
+  return Math.sqrt(Math.max(0, simRadiusM * simRadiusM - clampedR * clampedR)) - simRadiusM;
+}
+
+/**
+ * Smoothly transitions from strictly 0 inside the launchpad apron (r <= 70 m)
+ * to full spherical curvature for r >= 450 m, keeping the +/-250 m PPO zone flat-compatible (<0.5 m).
+ */
+export function computeCurvedSurfaceDrop(r: number, simRadiusM: number): number {
+  if (r <= 70) {
+    return 0;
+  }
+  return smoothstep(70, 450, r) * computeSphereDrop(r, simRadiusM);
+}
+
+/**
+ * Sample deterministic spherically curved planetary terrain height at world (x, z) meters.
+ * Guarantees strictly 0.0 inside `r <= 65 m` so the launchpad apron sits flush,
+ * and smoothly tapers relief into the underlying globe curve toward `localTerrainRadiusM`.
  */
 export function samplePlanetTerrainHeight(
   x: number,
@@ -199,7 +223,14 @@ export function samplePlanetTerrainHeight(
     return 0;
   }
 
+  const localR = config.scale.localTerrainRadiusM;
+  const sphereDrop = computeCurvedSurfaceDrop(r, config.scale.simRadiusM);
+  if (r >= localR) {
+    return sphereDrop;
+  }
+
   const blend = smoothstep(PAD_FLAT_RADIUS_M, PAD_BLEND_RADIUS_M, r);
+  const outerTaper = 1 - smoothstep(localR * 0.6, localR * 0.92, r);
   const { terrain } = config;
   const fx = x * terrain.noiseFrequency;
   const fz = z * terrain.noiseFrequency;
@@ -219,5 +250,5 @@ export function samplePlanetTerrainHeight(
 
   // Keep terrain mostly positive/rolling hills outside the pad while preserving crater bowls
   const shifted = rawHeight + terrain.heightScale * 0.14;
-  return blend * shifted;
+  return blend * shifted * outerTaper + sphereDrop;
 }

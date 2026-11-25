@@ -283,27 +283,30 @@ export class PropulsionEffects {
     this.elapsedSec += dt;
     const pressureBar = this.planet.physics.surfacePressureBar;
 
-    // 1. GLSL Mach-diamond exhaust plumes
+    // 1. GLSL Mach-diamond exhaust plumes (Full-stack ascent + detached Booster RTLS inner-3 Raptors)
     const maxBoosterPlumes = this.quality === "low" ? 3 : this.quality === "med" ? 6 : 10;
     const maxShipPlumes = this.quality === "low" ? 3 : 6;
-    const bActive =
+    const bAttachedActive =
       vehicleIntact && !telemetry.stageSeparated && telemetry.boosterThrottle > 0.02;
+    const bDetachedActive =
+      telemetry.stageSeparated &&
+      telemetry.booster.active &&
+      telemetry.booster.status !== "BOOSTER_CRASHED" &&
+      telemetry.booster.throttle > 0.02;
     const sActive = vehicleIntact && telemetry.shipThrottle > 0.02;
 
     const bLen = 19.0 + (1 - Math.min(1, pressureBar)) * 12.0;
     const sLen = 16.0 + (1 - Math.min(1, pressureBar)) * 11.0;
 
     this.boosterPlumes.forEach((p, idx) => {
-      const show = bActive && idx < maxBoosterPlumes;
+      const showAttached = bAttachedActive && idx < maxBoosterPlumes;
+      const showDetached = bDetachedActive && idx < 3;
+      const show = showAttached || showDetached;
       p.mesh.visible = show;
       if (show) {
-        updateExhaustPlumeUniforms(
-          p.mat,
-          this.elapsedSec,
-          telemetry.boosterThrottle,
-          pressureBar,
-          bLen
-        );
+        const thr = showDetached ? telemetry.booster.throttle : telemetry.boosterThrottle;
+        const len = showDetached ? bLen * 0.72 : bLen;
+        updateExhaustPlumeUniforms(p.mat, this.elapsedSec, thr, pressureBar, len);
       }
     });
 
@@ -361,25 +364,25 @@ export class PropulsionEffects {
     }
     this.stepParticles(this.cryoVent, dt, cryoBudget, 0.0, 0.35);
 
-    // 4. Planet-specific ground blast dust / steam clouds
+    // 4. Planet-specific ground blast dust / steam clouds (for Starship stack AND returning RTLS Booster)
     const blastBudget = this.quality === "low" ? 120 : this.quality === "med" ? 260 : 420;
     const totalThrottle = Math.max(telemetry.boosterThrottle, telemetry.shipThrottle);
-    if (vehicleIntact && totalThrottle > 0.06 && telemetry.altitudeM < 155) {
-      const prox = 1 - telemetry.altitudeM / 155;
+    const spawnBlastAt = (bx: number, bz: number, surfY: number, altM: number, thr: number) => {
+      const prox = 1 - altM / 155;
       const count = Math.ceil((this.quality === "low" ? 3 : this.quality === "med" ? 6 : 9) * prox);
       for (let s = 0; s < count; s++) {
         const idx = this.blastCursor % blastBudget;
         this.blastCursor++;
         const ang = this.rand() * Math.PI * 2;
         const r = 4.0 + this.rand() * 8.0;
-        this.groundBlast.positions[idx * 3] = telemetry.position.x + Math.cos(ang) * r;
-        this.groundBlast.positions[idx * 3 + 1] = telemetry.surfaceHeightM + 1.2 + this.rand() * 2.0;
-        this.groundBlast.positions[idx * 3 + 2] = telemetry.position.z + Math.sin(ang) * r;
+        this.groundBlast.positions[idx * 3] = bx + Math.cos(ang) * r;
+        this.groundBlast.positions[idx * 3 + 1] = surfY + 1.2 + this.rand() * 2.0;
+        this.groundBlast.positions[idx * 3 + 2] = bz + Math.sin(ang) * r;
 
         const speedOut =
           this.planet.id === "moon"
             ? 32 + this.rand() * 28
-            : 18 + this.rand() * 24 * totalThrottle;
+            : 18 + this.rand() * 24 * thr;
         this.groundBlast.velocities[idx * 3] = Math.cos(ang) * speedOut;
         this.groundBlast.velocities[idx * 3 + 1] =
           this.planet.id === "moon"
@@ -389,6 +392,25 @@ export class PropulsionEffects {
         this.groundBlast.ages[idx] = 0;
         this.groundBlast.lifetimes[idx] = this.planet.id === "moon" ? 0.95 : 2.6 + this.rand() * 1.4;
       }
+    };
+
+    if (vehicleIntact && totalThrottle > 0.06 && telemetry.altitudeM < 155) {
+      spawnBlastAt(
+        telemetry.position.x,
+        telemetry.position.z,
+        telemetry.surfaceHeightM,
+        telemetry.altitudeM,
+        totalThrottle
+      );
+    }
+    if (bDetachedActive && telemetry.booster.altitudeM < 145) {
+      spawnBlastAt(
+        telemetry.booster.position.x,
+        telemetry.booster.position.z,
+        telemetry.padDeckY,
+        telemetry.booster.altitudeM,
+        telemetry.booster.throttle
+      );
     }
     const blastGrav = this.planet.id === "moon" ? -5.5 : this.planet.id === "earth" ? 2.4 : 0.8;
     const blastDrag = this.planet.id === "moon" ? 0.05 : 0.95;

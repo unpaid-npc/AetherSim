@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { PlanetConfig } from "../config/planets";
-import { SeededNoise2D, samplePlanetTerrainHeight } from "../utils/noise";
+import { SeededNoise2D, computeSphereDrop, samplePlanetTerrainHeight } from "../utils/noise";
 import {
   type PbrTextureSet,
   disposeTextureSet,
@@ -29,9 +29,11 @@ export class LaunchComplex {
   private disposables: Array<{ dispose(): void }> = [];
 
   private padDeckY = 2.2;
+  private planetSimRadiusM = 67_790;
   private baseFocusTarget = new THREE.Vector3(0, 12, 0);
 
   private qdArmPivot: THREE.Group | null = null;
+  private catchCarriageGroup: THREE.Group | null = null;
   private chopstickLeftPivot: THREE.Group | null = null;
   private chopstickRightPivot: THREE.Group | null = null;
   private orbitalAnim: OrbitalStationAnim | null = null;
@@ -67,6 +69,13 @@ export class LaunchComplex {
     this.chopstickRightPivot.rotation.y = -angle;
   }
 
+  setCatchCarriageHeight(yM: number): void {
+    if (!this.catchCarriageGroup) {
+      return;
+    }
+    this.catchCarriageGroup.position.y = Math.max(70, Math.min(118, yM));
+  }
+
   update(elapsedSec: number): void {
     if (!this.orbitalAnim) {
       return;
@@ -76,7 +85,8 @@ export class LaunchComplex {
     const theta = phaseOffset + elapsedSec * angularSpeed;
     const x = Math.cos(theta) * radiusX;
     const z = Math.sin(theta) * radiusZ;
-    group.position.set(x, altitudeY, z);
+    const sphereDrop = computeSphereDrop(Math.hypot(x, z), this.planetSimRadiusM);
+    group.position.set(x, altitudeY + sphereDrop, z);
     // Orient station nose along orbital tangent
     const dx = -Math.sin(theta) * radiusX;
     const dz = Math.cos(theta) * radiusZ;
@@ -91,6 +101,7 @@ export class LaunchComplex {
 
   updatePlanet(config: PlanetConfig, maxAnisotropy: number): void {
     this.clearCurrent();
+    this.planetSimRadiusM = config.scale.simRadiusM;
 
     this.activeGroup = new THREE.Group();
     this.group.add(this.activeGroup);
@@ -311,30 +322,34 @@ export class LaunchComplex {
     braces.instanceMatrix.needsUpdate = true;
     towerGroup.add(braces);
 
-    // Carriage & animated Chopstick Catch Arms
+    // Carriage & animated Chopstick Catch Arms inside vertically translating catchCarriageGroup
+    this.catchCarriageGroup = new THREE.Group();
+    this.catchCarriageGroup.position.set(0, 108, 0);
+
     const carriage = new THREE.Mesh(
       this.trackGeom(new THREE.BoxGeometry(11.4, 7.5, 11.4)),
       brightSteelMat
     );
-    carriage.position.set(0, 108, 0);
-    towerGroup.add(carriage);
+    carriage.position.set(0, 0, 0);
+    this.catchCarriageGroup.add(carriage);
 
     const armGeom = this.trackGeom(new THREE.BoxGeometry(24.0, 2.2, 1.4));
     this.chopstickLeftPivot = new THREE.Group();
-    this.chopstickLeftPivot.position.set(5.2, 108, -4.6);
+    this.chopstickLeftPivot.position.set(5.2, 0, -4.6);
     const leftArm = new THREE.Mesh(armGeom, brightSteelMat);
     leftArm.position.set(12.0, 0, 0);
     leftArm.castShadow = true;
     this.chopstickLeftPivot.add(leftArm);
 
     this.chopstickRightPivot = new THREE.Group();
-    this.chopstickRightPivot.position.set(5.2, 108, 4.6);
+    this.chopstickRightPivot.position.set(5.2, 0, 4.6);
     const rightArm = new THREE.Mesh(armGeom, brightSteelMat);
     rightArm.position.set(12.0, 0, 0);
     rightArm.castShadow = true;
     this.chopstickRightPivot.add(rightArm);
 
-    towerGroup.add(this.chopstickLeftPivot, this.chopstickRightPivot);
+    this.catchCarriageGroup.add(this.chopstickLeftPivot, this.chopstickRightPivot);
+    towerGroup.add(this.catchCarriageGroup);
     this.setCatchArmsOpen(0.18);
 
     // Quick Disconnect (QD) Umbilical Arm
@@ -795,10 +810,10 @@ export class LaunchComplex {
     this.orbitalAnim = {
       group: station,
       strobes: [s1, s2],
-      radiusX: planetId === "earth" ? 1550 : 1450,
-      radiusZ: planetId === "earth" ? 1200 : 1150,
-      altitudeY: planetId === "earth" ? 1320 : 1180,
-      angularSpeed: 0.028,
+      radiusX: planetId === "earth" ? 2100 : 1950,
+      radiusZ: planetId === "earth" ? 1750 : 1650,
+      altitudeY: planetId === "earth" ? 2400 : planetId === "mars" ? 1900 : 1600,
+      angularSpeed: 0.024,
       phaseOffset: planetId === "mars" ? 0.55 : planetId === "earth" ? 0.85 : 0.4,
     };
     this.update(0);
@@ -813,6 +828,7 @@ export class LaunchComplex {
     disposeTextureSet(this.padTextures);
     this.padTextures = null;
     this.qdArmPivot = null;
+    this.catchCarriageGroup = null;
     this.chopstickLeftPivot = null;
     this.chopstickRightPivot = null;
     this.orbitalAnim = null;

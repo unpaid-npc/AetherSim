@@ -25,6 +25,8 @@ export interface SimDiagnostics {
   isElectron: boolean;
   drawCalls: number;
   triangles: number;
+  canvasNonBlackPct?: number;
+  canvasMeanRgb?: [number, number, number];
   aiState?: string;
   aiBrainLevel?: string;
   aiBestSuccessPct?: number;
@@ -32,7 +34,11 @@ export interface SimDiagnostics {
   aiTotalSteps?: number;
   aiMeanReturn?: number;
   cameraPreset?: string;
+  trackTarget?: string;
+  boosterStatus?: string;
   audioMuted?: boolean;
+  orbitAchieved?: boolean;
+  timeWarp?: number;
 }
 
 export interface ProfilerSampleResult {

@@ -134,6 +134,25 @@ This document defines the repository's Git workflow and tracks progress across *
 
 ---
 
+### Milestone 5 — Planet-Scale Worlds, Seamless Surface-to-Orbit Transition & 3D Orbital Insertion (`v1.1.0`) — **COMPLETE & VERIFIED**
+- **Branch:** `milestone/m5-planet-scale-and-orbit`
+- **Implemented Scope:**
+  - **Stage 5A (Planet-Scale Globes & Google-Earth Zoom):**
+    - Added `1:50` planetary scale configs (`src/config/planets.ts`: Moon `34,748 m`, Mars `67,790 m`, Earth `127,420 m`), radial curvature offset (`computeCurvedSurfaceDrop`), zenith-aligned 3D `PlanetGlobe.ts` + offline procedural PBR textures (`PlanetGlobeTextures.ts`, `earthGeography.ts`), Fresnel `planetLimbShader.ts`, and adaptive `CameraDirector` surface-to-globe zoom.
+  - **Desktop Dev-Mode Black-Screen Hotfix (`vite.config.ts`, `electron/main.cjs`, `src/main.ts`, `SceneManager.ts`):**
+    - Ignored `venv/` (`29,927` files) and heavy artifacts in Vite's Chokidar watcher + bypassed PostCSS probing (cutting CSS transform from `8,746 ms` to `92 ms`), added Chromium `webRequest.onErrorOccurred` + transient loopback reload recovery, fail-safe DOM startup error overlay, and upgraded `--smoke-test` with backbuffer pixel luminance verification (`gl.readPixels`), `#hud-root` checks, and `bootMs` timing.
+  - **Stage 5B (Visual Seam Fixes, 3D Spherical Orbit Insertion, Path Visualizer & `C6 MAP`):**
+    - Replaced jagged coastal rasterization with anti-aliased quadratic coastline smoothing + bilinear coastal shelf sampling, `6–20 km` `TerrainSystem` opacity cross-fade, and `4–14 km` Earth cloud-shell ramp with fog attenuation above `3.5 km`.
+    - Built pure Keplerian astrodynamics (`src/sim/OrbitalMechanics.ts`) and upgraded `FlightController.ts` `launch` mode to spherical Velocity-Verlet gravity ($\mu = g_0 R_{\text{sim}}^2$), `1x | 2x | 5x | 10x` Time Warp, and closed-loop gravity-turn → stage-sep → `ORBIT_INSERTION` → `COAST_TO_AP` → `CIRCULARIZATION` → `ORBIT_ACHIEVED` guidance.
+    - Created `OrbitVisualizer.ts` (dashed Target Parking Orbit Ring, color-coded Keplerian arc, adaptive trail ribbon, constant-screen-scale `SHIP`/`AP`/`PE`/`PAD` markers), `C6 MAP` (`F6`) camera view, `PATH: ON/OFF` toggle, Time Warp buttons (`[`/`]`), orbital HUD strip (`Ap`/`Pe`/`Ecc`/target), and `v1.1.0` version sync.
+- **Verification Gate Results (`v1.1.0`):**
+  - `npm run test`: **7 test files, 27 tests passed (`0` failures)** (including Mars `Ap=22.35km, Pe=19.00km, e=0.0189`, Earth `Ap=41.80km, Pe=35.61km, e=0.0186`, Moon `Ap=22.14km, Pe=13.57km, e=0.0815` headless Launch-to-Orbit insertion proofs + all 23 prior tests intact).
+  - `npm run build`: **`tsc --noEmit && vite build` passed (`0` errors)** across `53` modules in `560 ms`.
+  - `node scripts/launch-desktop.mjs --smoke-test` (Dev): **`SMOKE_OK`**, `bootMs: 261 ms`, `hudChildren: 4`, `24 FPS`, `124` draw calls, `70,551` triangles, `canvasNonBlackPct: 100%`, `errors: []`.
+  - `node scripts/launch-desktop.mjs --prod --smoke-test` (Prod): **`SMOKE_OK`**, `bootMs: 260 ms`, `hudChildren: 4`, `24 FPS`, `124` draw calls, `70,551` triangles, `canvasNonBlackPct: 100%`, `errors: []`.
+
+---
+
 ### Phase B & Phase C — 14-Module Ecosystem Horizon (Post-`v1.0`) — **PLANNED ARCHITECTURE**
 - **Phase B (Co-Simulation & Expanded Physics):** Spherical rotating-planet N-body orbital propagator, FMI 3.0 / FMU and OMG DDS interfaces, Mars-GRAM/US76 wind & thermal/TPS models, EKF navigation + convex powered-descent guidance, independent IIP corridor / AFSS monitor, and UQ-bounded PINN aerodynamic surrogates.
 - **Phase C (HIL FlatSat & Research Benchmarks):** Deterministic RTOS/FPGA HIL FlatSat bridge with hardware bus emulation, closed-loop ECLSS models, and exploratory offline quantum/QAOA trajectory-optimization benchmarks compared against classical convex solvers.

@@ -75,6 +75,7 @@ export class StarshipVehicle {
   private mode: "launch" | "landing" = "launch";
   private separated = false;
   private boosterThrottle = 0;
+  private detachedBoosterThrottle = 0;
   private shipThrottle = 0;
 
   constructor(maxAnisotropy: number) {
@@ -645,8 +646,20 @@ export class StarshipVehicle {
   setIntactVisible(visible: boolean): void {
     this.root.visible = visible;
     if (!visible) {
-      this.boosterPlumeLight.intensity = 0;
+      if (!this.separated) {
+        this.boosterPlumeLight.intensity = 0;
+      }
       this.shipPlumeLight.intensity = 0;
+    }
+  }
+
+  setBoosterIntactVisible(visible: boolean): void {
+    if (!this.separated) {
+      return;
+    }
+    this.detachedBoosterRoot.visible = visible;
+    if (!visible) {
+      this.boosterPlumeLight.intensity = 0;
     }
   }
 
@@ -666,17 +679,23 @@ export class StarshipVehicle {
     boosterThrottle: number,
     shipThrottle: number,
     gimbalX: number,
-    gimbalZ: number
+    gimbalZ: number,
+    detachedBoosterThrottle = 0
   ): void {
     this.boosterThrottle = Math.max(0, Math.min(1, boosterThrottle));
+    this.detachedBoosterThrottle = Math.max(0, Math.min(1, detachedBoosterThrottle));
     this.shipThrottle = Math.max(0, Math.min(1, shipThrottle));
 
     this.boosterGimbalGroup.rotation.set(gimbalZ * 0.55, 0, -gimbalX * 0.55);
     this.shipGimbalGroup.rotation.set(gimbalZ * 0.65, 0, -gimbalX * 0.65);
 
-    const bVis = this.boosterThrottle > 0.02 && this.boosterGroup.visible && !this.separated;
+    const activeBThr = this.separated ? this.detachedBoosterThrottle : this.boosterThrottle;
+    const boosterVisible = this.separated
+      ? this.detachedBoosterRoot.visible && this.boosterGroup.visible
+      : this.root.visible && this.boosterGroup.visible;
+    const bVis = activeBThr > 0.02 && boosterVisible;
     this.boosterGlowMat.opacity = 0;
-    this.boosterPlumeLight.intensity = bVis ? 14.0 + this.boosterThrottle * 32.0 : 0;
+    this.boosterPlumeLight.intensity = bVis ? 14.0 + activeBThr * 32.0 : 0;
     for (const glow of this.boosterGlowMeshes) {
       glow.visible = false;
     }
@@ -693,9 +712,15 @@ export class StarshipVehicle {
   getActiveNozzleTransforms(): NozzleTransform[] {
     const out: NozzleTransform[] = [];
     this.root.updateMatrixWorld(true);
+    this.detachedBoosterRoot.updateMatrixWorld(true);
     const downDir = new THREE.Vector3(0, -1, 0);
 
-    if (this.boosterThrottle > 0.02 && this.boosterGroup.visible && !this.separated) {
+    const activeBThr = this.separated ? this.detachedBoosterThrottle : this.boosterThrottle;
+    const boosterVisible = this.separated
+      ? this.detachedBoosterRoot.visible && this.boosterGroup.visible
+      : this.root.visible && this.boosterGroup.visible;
+
+    if (activeBThr > 0.02 && boosterVisible) {
       const quat = new THREE.Quaternion();
       this.boosterGroup.getWorldQuaternion(quat);
       const dir = downDir.clone().applyQuaternion(quat).normalize();
@@ -706,7 +731,7 @@ export class StarshipVehicle {
           position: worldPos,
           direction: dir.clone(),
           radius: n.radius,
-          throttle: this.boosterThrottle,
+          throttle: activeBThr,
           kind: "booster",
         });
       }

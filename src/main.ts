@@ -16,8 +16,10 @@ import {
   type CameraPreset,
   SceneManager,
   type SceneTelemetry,
+  type TrackTarget,
 } from "./scene/SceneManager";
 import type { FaultConfig } from "./sim/FaultInjector";
+import type { TimeWarp } from "./sim/FlightController";
 
 const APP_VERSION = pkg.version;
 
@@ -43,6 +45,74 @@ function formatTClock(tSec: number): string {
   const secs = abs % 60;
   return `T${sign}${String(mins).padStart(2, "0")}:${secs.toFixed(1).padStart(4, "0")}`;
 }
+
+function showFatalStartupBanner(title: string, detail: string): void {
+  const existing = document.getElementById("aether-fatal-banner");
+  const container = existing ?? document.createElement("div");
+  container.id = "aether-fatal-banner";
+  container.style.cssText = [
+    "position:fixed",
+    "inset:24px",
+    "z-index:99999",
+    "display:flex",
+    "flex-direction:column",
+    "gap:12px",
+    "padding:20px 24px",
+    "border-radius:12px",
+    "border:1px solid #f87171",
+    "background:rgba(10,14,24,0.96)",
+    "color:#f8fafc",
+    "font-family:'Segoe UI',system-ui,sans-serif",
+    "box-shadow:0 20px 50px rgba(0,0,0,0.7)",
+    "overflow:auto",
+  ].join(";");
+
+  container.innerHTML = "";
+
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  heading.style.cssText = "margin:0;color:#fca5a5;font-size:18px;font-weight:700;";
+
+  const pre = document.createElement("pre");
+  pre.textContent = detail;
+  pre.style.cssText =
+    "margin:0;padding:12px;border-radius:8px;background:#05070d;border:1px solid rgba(248,113,113,0.3);color:#e2e8f0;font-family:'Cascadia Mono','Consolas',monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;overflow:auto;flex:1;";
+
+  const actions = document.createElement("div");
+  actions.style.cssText = "display:flex;gap:10px;align-items:center;";
+  const reloadBtn = document.createElement("button");
+  reloadBtn.type = "button";
+  reloadBtn.textContent = "Reload Simulator";
+  reloadBtn.style.cssText =
+    "padding:8px 16px;border-radius:8px;border:1px solid #38bdf8;background:rgba(56,189,248,0.2);color:#eef4fb;font-weight:600;cursor:pointer;";
+  reloadBtn.addEventListener("click", () => window.location.reload());
+  actions.append(reloadBtn);
+
+  container.append(heading, pre, actions);
+  if (!existing) {
+    (document.body ?? document.documentElement).append(container);
+  }
+}
+
+window.addEventListener("error", (event) => {
+  const detail =
+    event.error instanceof Error
+      ? event.error.stack ?? event.error.message
+      : `${event.message} (${event.filename}:${event.lineno})`;
+  console.error("[AetherSim Error]", detail);
+  if (!window.__STARSHIP_SIM__?.ready) {
+    showFatalStartupBanner("AetherSim failed to initialize", detail);
+  }
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const detail =
+    event.reason instanceof Error ? event.reason.stack ?? event.reason.message : String(event.reason);
+  console.error("[AetherSim Unhandled Rejection]", detail);
+  if (!window.__STARSHIP_SIM__?.ready) {
+    showFatalStartupBanner("AetherSim async startup failure", detail);
+  }
+});
 
 function bootstrap(): void {
   const canvas = document.getElementById("sim-canvas");
@@ -125,6 +195,8 @@ function bootstrap(): void {
         isElectron,
         drawCalls: telemetry.drawCalls,
         triangles: telemetry.triangles,
+        canvasNonBlackPct: telemetry.canvasNonBlackPct,
+        canvasMeanRgb: telemetry.canvasMeanRgb,
         aiState: telemetry.ai.mode,
         aiBrainLevel: telemetry.ai.brainLevel,
         aiBestSuccessPct: telemetry.ai.bestBrain.evalSuccessRatePct,
@@ -132,7 +204,11 @@ function bootstrap(): void {
         aiTotalSteps: telemetry.ai.metrics.totalSteps,
         aiMeanReturn: telemetry.ai.metrics.rollingMeanReturn,
         cameraPreset: telemetry.cameraPreset,
+        trackTarget: telemetry.trackTarget,
+        boosterStatus: telemetry.flight.booster.status,
         audioMuted: telemetry.audioMuted,
+        orbitAchieved: telemetry.flight.orbital.orbitAchieved,
+        timeWarp: telemetry.flight.orbital.timeWarp,
       };
     },
     (summary) => {
@@ -230,6 +306,8 @@ function bootstrap(): void {
     { preset: "engine", label: "C3 ENGINE", tip: "Aft Raptor Nozzle & Plume Camera (F3)" },
     { preset: "station", label: "C4 STATION", tip: "Spaceport & Habitat Scenic Camera (F4)" },
     { preset: "orbit", label: "C5 ORBIT", tip: "Free Interactive Orbit Camera (F5)" },
+    { preset: "map", label: "C6 MAP", tip: "Orbital Map Overview Camera (F6)" },
+    { preset: "booster", label: "C7 BOOSTER", tip: "Autonomous Booster RTLS Camera (F7)" },
   ];
   const camBtns = new Map<CameraPreset, HTMLButtonElement>();
   for (const spec of camSpecs) {
@@ -254,6 +332,51 @@ function bootstrap(): void {
     syncNow();
   });
   camStrip.append(autoDirBtn);
+
+  // Vehicle tracking target selector: Starship vs Returning Super Heavy Booster
+  const trackStrip = el("div", "pill-strip");
+  const trackBtns = new Map<TrackTarget, HTMLButtonElement>();
+  (
+    [
+      { target: "ship", label: "TRACK: SHIP", tip: "Track Starship Upper Stage" },
+      { target: "booster", label: "BOOSTER", tip: "Track Super Heavy Booster RTLS Return" },
+    ] as const
+  ).forEach((item) => {
+    const tb = el("button", "seg-btn", item.label, item.tip);
+    tb.type = "button";
+    tb.addEventListener("click", () => {
+      sceneManager.setTrackTarget(item.target);
+      syncNow();
+    });
+    trackStrip.append(tb);
+    trackBtns.set(item.target, tb);
+  });
+
+  // Orbit Path toggle & Time Warp controls
+  const warpStrip = el("div", "pill-strip");
+  const warpLevels: readonly TimeWarp[] = [1, 2, 5, 10];
+  const warpBtns = new Map<TimeWarp, HTMLButtonElement>();
+  for (const w of warpLevels) {
+    const wb = el("button", "seg-btn", `${w}x`, `Set physics time warp to ${w}x ([ / ] keys)`);
+    wb.type = "button";
+    wb.addEventListener("click", () => {
+      sceneManager.setTimeWarp(w);
+      syncNow();
+    });
+    warpStrip.append(wb);
+    warpBtns.set(w, wb);
+  }
+  const orbitPathBtn = el(
+    "button",
+    "action-btn active",
+    "PATH: ON",
+    "Toggle 3D Target Orbit Ring, Live Trajectory Arc, Flight Trail & AP/PE/SHIP Markers"
+  );
+  orbitPathBtn.type = "button";
+  orbitPathBtn.addEventListener("click", () => {
+    sceneManager.setOrbitPathEnabled(!sceneManager.isOrbitPathEnabled());
+    syncNow();
+  });
 
   // Utility group: Quality, Audio, Lab Toggle, Help
   const utilGroup = el("div", "topbar-group");
@@ -291,13 +414,14 @@ function bootstrap(): void {
   const helpBtn = el("button", "action-btn", "?", "Open Quick-Reference Controls & Guide");
   helpBtn.type = "button";
 
-  utilGroup.append(qualStrip, audioBtn, leftToggleBtn, labToggleBtn, helpBtn);
+  utilGroup.append(warpStrip, orbitPathBtn, qualStrip, audioBtn, leftToggleBtn, labToggleBtn, helpBtn);
   topBar.append(
     brandGroup,
     planetStrip,
     missionStrip,
     pilotStrip,
     camStrip,
+    trackStrip,
     utilGroup
   );
 
@@ -869,6 +993,19 @@ function bootstrap(): void {
 
   webcastMain.append(gauges, fuelInline, verdictBanner);
 
+  const orbitalRow = el("div", "orbital-telemetry-row");
+  const makeOrbItem = (label: string) => {
+    const item = el("div", "telemetry-item");
+    const val = el("span", "telemetry-value", "-");
+    item.append(el("span", "telemetry-label", label), val);
+    orbitalRow.append(item);
+    return val;
+  };
+  const apVal = makeOrbItem("APOAPSIS");
+  const peVal = makeOrbItem("PERIAPSIS");
+  const eccVal = makeOrbItem("ECCENTRICITY");
+  const targetOrbVal = makeOrbItem("TARGET ORBIT");
+
   const manualHint = el(
     "div",
     "manual-hint",
@@ -896,7 +1033,9 @@ function bootstrap(): void {
   const faultStrong = el("strong", undefined, "NOMINAL");
   faultPill.append(document.createTextNode("FAULTS "), faultStrong);
 
-  metaLeft.append(fpsPill, drawPill, envPill, faultPill);
+  const boosterRtlsPill = el("span", "booster-rtls-pill", "BSTR: ATTACHED");
+
+  metaLeft.append(fpsPill, drawPill, envPill, faultPill, boosterRtlsPill);
 
   const metaRight = el("div", "topbar-group");
   const gpuPill = el("span", "status-pill");
@@ -910,7 +1049,7 @@ function bootstrap(): void {
   metaRight.append(gpuPill, resetCamBtn);
 
   footerMeta.append(metaLeft, metaRight);
-  bottomStrip.append(webcastMain, manualHint, footerMeta);
+  bottomStrip.append(webcastMain, orbitalRow, manualHint, footerMeta);
 
   // =========================================================================
   // 4. HELP / QUICK-REFERENCE MODAL
@@ -932,7 +1071,9 @@ function bootstrap(): void {
     <p><strong>Keyboard Shortcuts:</strong></p>
     <ul>
       <li><code>1 / 2 / 3</code> Switch Mars / Earth / Moon</li>
-      <li><code>F1 – F5</code> Camera Presets (Pad, Drone, Engine, Station, Free Orbit)</li>
+      <li><code>F1 – F7</code> Camera Presets (Pad, Drone, Engine, Station, Free Orbit, Orbital Map, Booster RTLS)</li>
+      <li><code>TRACK: SHIP / BOOSTER</code> Switch live tracking focus between Starship Upper Stage and returning Super Heavy</li>
+      <li><code>[ / ]</code> Step Physics Time Warp (1x / 2x / 5x / 10x)</li>
       <li><code>Space</code> Start mission / Trigger Stage Separation · <code>R</code> Reset &amp; Re-lock Camera</li>
       <li><code>T</code> Toggle SAS · <code>G</code> Toggle Landing Legs</li>
       <li><code>Manual Pilot:</code> <code>W/Shift</code> &amp; <code>S/Ctrl</code> Throttle · <code>Z/X</code> 100%/0% · <code>Arrows/IJKL</code> Tilt · <code>Q/E</code> Roll</li>
@@ -987,6 +1128,15 @@ function bootstrap(): void {
       b.classList.toggle("active", p === t.cameraPreset);
     }
     autoDirBtn.classList.toggle("active", t.autoDirector);
+    trackStrip.style.display = f.missionMode === "launch" ? "inline-flex" : "none";
+    for (const [trg, tb] of trackBtns.entries()) {
+      tb.classList.toggle("active", trg === t.trackTarget);
+    }
+    for (const [w, b] of warpBtns.entries()) {
+      b.classList.toggle("active", w === f.orbital.timeWarp);
+    }
+    orbitPathBtn.textContent = t.orbitPathEnabled ? "PATH: ON" : "PATH: OFF";
+    orbitPathBtn.classList.toggle("active", t.orbitPathEnabled);
     for (const [q, b] of qualBtns.entries()) {
       b.classList.toggle("active", q === t.quality);
     }
@@ -1015,13 +1165,12 @@ function bootstrap(): void {
             : ai.mode === "eval"
               ? "FLYING AI"
               : "IDLE";
-    aiStatePill.className = `ai-state-pill ${
-      ai.mode === "pre_training" || ai.mode === "live_train" || ai.mode === "turbo_train"
+    aiStatePill.className = `ai-state-pill ${ai.mode === "pre_training" || ai.mode === "live_train" || ai.mode === "turbo_train"
         ? "training"
         : ai.mode === "eval"
           ? "eval"
           : ""
-    }`;
+      }`;
 
     if (ai.mode === "pre_training") {
       aiStatusBanner.className = "ai-status-banner status-pretrain";
@@ -1129,6 +1278,23 @@ function bootstrap(): void {
     shipBar.fill.style.width = `${sPct}%`;
     shipBar.pct.textContent = `${sPct}%`;
 
+    const formatOrbAlt = (alt: number): string => {
+      if (!Number.isFinite(alt)) return "ESCAPE";
+      if (alt <= 0) return "SUBORB";
+      return alt >= 1000 ? `${(alt / 1000).toFixed(2)} km` : `${alt.toFixed(0)} m`;
+    };
+    orbitalRow.style.display = f.missionMode === "launch" ? "flex" : "none";
+    if (f.missionMode === "launch") {
+      const orb = f.orbital;
+      const airborne = f.phase !== "PRELAUNCH" && f.phase !== "COUNTDOWN";
+      apVal.textContent = airborne ? formatOrbAlt(orb.apoapsisAltM) : "0.0 m";
+      peVal.textContent = airborne ? formatOrbAlt(orb.periapsisAltM) : "SUBORB";
+      eccVal.textContent = Number.isFinite(orb.eccentricity)
+        ? orb.eccentricity.toFixed(3)
+        : "—";
+      targetOrbVal.textContent = `${(orb.targetOrbitAltM / 1000).toFixed(0)} km · ${orb.circularVelocityMps.toFixed(0)} m/s`;
+    }
+
     if (f.crashEvent) {
       verdictBanner.style.display = "block";
       verdictBanner.className = "status-banner crash";
@@ -1143,6 +1309,10 @@ function bootstrap(): void {
             : "crash";
       verdictBanner.className = `status-banner ${cls}`;
       verdictBanner.textContent = `${f.landingVerdict} · |vy|=${f.touchdownVerticalSpeedMps?.toFixed(2) ?? "-"} m/s`;
+    } else if (f.missionMode === "launch" && f.orbital.orbitAchieved) {
+      verdictBanner.style.display = "block";
+      verdictBanner.className = "status-banner nominal";
+      verdictBanner.textContent = `ORBIT ACHIEVED · Ap ${(f.orbital.apoapsisAltM / 1000).toFixed(1)} km · Pe ${(f.orbital.periapsisAltM / 1000).toFixed(1)} km · e=${f.orbital.eccentricity.toFixed(3)}`;
     } else if (f.maxQReached && f.missionMode === "launch") {
       verdictBanner.style.display = "block";
       verdictBanner.className = "status-banner maxq";
@@ -1156,6 +1326,43 @@ function bootstrap(): void {
     faultStrong.textContent = f.activeFaults;
     gpuStrong.textContent = t.rendererName;
 
+    if (f.missionMode !== "launch") {
+      boosterRtlsPill.style.display = "none";
+    } else {
+      boosterRtlsPill.style.display = "inline-flex";
+      const bs = f.booster;
+      if (bs.status === "BOOSTER_CAUGHT" || bs.status === "BOOSTER_LANDED") {
+        const off = bs.touchdownOffsetM?.toFixed(1) ?? "0.0";
+        const vy = bs.touchdownVerticalSpeedMps?.toFixed(1) ?? "0.0";
+        boosterRtlsPill.className = "booster-rtls-pill rtls-ok";
+        boosterRtlsPill.textContent =
+          bs.status === "BOOSTER_CAUGHT"
+            ? `BSTR: CAUGHT (${off}m · ${vy}m/s)`
+            : `BSTR: LANDED (${off}m · ${vy}m/s)`;
+      } else if (bs.status === "BOOSTER_CRASHED") {
+        boosterRtlsPill.className = "booster-rtls-pill rtls-fail";
+        boosterRtlsPill.textContent = "BSTR: CRASHED";
+      } else if (bs.status !== "ATTACHED" && bs.status !== "NONE") {
+        const label =
+          bs.status === "BOOSTER_FLIP"
+            ? "RTLS FLIP"
+            : bs.status === "BOOSTER_BOOSTBACK"
+              ? "BOOSTBACK"
+              : bs.status === "BOOSTER_DESCENT"
+                ? "DESCENT"
+                : "LANDING BURN";
+        const altLabel =
+          bs.altitudeM >= 1000
+            ? `${(bs.altitudeM / 1000).toFixed(1)}km`
+            : `${bs.altitudeM.toFixed(0)}m`;
+        boosterRtlsPill.className = "booster-rtls-pill rtls-active";
+        boosterRtlsPill.textContent = `BSTR: ${label} · ${altLabel}`;
+      } else {
+        boosterRtlsPill.className = "booster-rtls-pill";
+        boosterRtlsPill.textContent = `BSTR: ${bs.status}`;
+      }
+    }
+
     repaintResearchCanvases(false);
   }
 
@@ -1165,10 +1372,14 @@ function bootstrap(): void {
       rendererName: sceneManager.getRendererName(),
       drawCalls: latestTelemetry?.drawCalls ?? 0,
       triangles: latestTelemetry?.triangles ?? 0,
+      canvasNonBlackPct: latestTelemetry?.canvasNonBlackPct ?? 0,
+      canvasMeanRgb: latestTelemetry?.canvasMeanRgb ?? [0, 0, 0],
       quality: sceneManager.getQualityPreset(),
       cameraPreset: sceneManager.getCameraPreset(),
+      trackTarget: sceneManager.getTrackTarget(),
       autoDirector: sceneManager.getAutoDirector(),
       audioMuted: sceneManager.isAudioMuted(),
+      orbitPathEnabled: sceneManager.isOrbitPathEnabled(),
       flight: sceneManager.getFlightTelemetry(),
       ai: sceneManager.getAIStatus(),
     };
@@ -1189,7 +1400,11 @@ function bootstrap(): void {
       window.__STARSHIP_SIM__.aiTotalSteps = snap.ai.metrics.totalSteps;
       window.__STARSHIP_SIM__.aiMeanReturn = snap.ai.metrics.rollingMeanReturn;
       window.__STARSHIP_SIM__.cameraPreset = snap.cameraPreset;
+      window.__STARSHIP_SIM__.trackTarget = snap.trackTarget;
+      window.__STARSHIP_SIM__.boosterStatus = snap.flight.booster.status;
       window.__STARSHIP_SIM__.audioMuted = snap.audioMuted;
+      window.__STARSHIP_SIM__.orbitAchieved = snap.flight.orbital.orbitAchieved;
+      window.__STARSHIP_SIM__.timeWarp = snap.flight.orbital.timeWarp;
     }
   }
 
@@ -1223,7 +1438,11 @@ function bootstrap(): void {
     aiTotalSteps: initialAI.metrics.totalSteps,
     aiMeanReturn: initialAI.metrics.rollingMeanReturn,
     cameraPreset: sceneManager.getCameraPreset(),
+    trackTarget: sceneManager.getTrackTarget(),
+    boosterStatus: initialTel.booster.status,
     audioMuted: sceneManager.isAudioMuted(),
+    orbitAchieved: initialTel.orbital.orbitAchieved,
+    timeWarp: initialTel.orbital.timeWarp,
   };
 
   window.__AETHERSIM_PROFILER__ = {
@@ -1332,6 +1551,22 @@ function bootstrap(): void {
       event.preventDefault();
       sceneManager.setCameraPreset("orbit");
       syncNow();
+    } else if (event.code === "F6") {
+      event.preventDefault();
+      sceneManager.setCameraPreset("map");
+      syncNow();
+    } else if (event.code === "F7") {
+      event.preventDefault();
+      sceneManager.setCameraPreset("booster");
+      syncNow();
+    } else if (event.code === "BracketLeft" || event.code === "BracketRight") {
+      const idx = warpLevels.indexOf(sceneManager.getTimeWarp());
+      const nextIdx =
+        event.code === "BracketLeft"
+          ? Math.max(0, idx - 1)
+          : Math.min(warpLevels.length - 1, idx + 1);
+      sceneManager.setTimeWarp(warpLevels[nextIdx]);
+      syncNow();
     } else if (event.code === "Space") {
       event.preventDefault();
       const tel = sceneManager.getFlightTelemetry();
@@ -1370,4 +1605,12 @@ function bootstrap(): void {
   });
 }
 
-bootstrap();
+try {
+  bootstrap();
+} catch (err) {
+  console.error("[AetherSim Bootstrap Error]", err);
+  showFatalStartupBanner(
+    "AetherSim failed to initialize",
+    err instanceof Error ? (err.stack ?? err.message) : String(err)
+  );
+}

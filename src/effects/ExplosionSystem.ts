@@ -5,6 +5,9 @@ import { SeededNoise2D, samplePlanetTerrainHeight } from "../utils/noise";
 import type { QualityPreset } from "./PropulsionEffects";
 
 const FIREBALL_VERT = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_vertex>
+
 uniform float uTime;
 uniform float uProgress;
 varying vec3 vNormalDir;
@@ -57,10 +60,14 @@ void main() {
   vNormalDir = normalize(normalMatrix * normal);
   vViewDir = normalize(-mvPos.xyz);
   gl_Position = projectionMatrix * mvPos;
+  #include <logdepthbuf_vertex>
 }
 `;
 
 const FIREBALL_FRAG = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_fragment>
+
 uniform float uProgress;
 uniform float uTime;
 varying vec3 vNormalDir;
@@ -93,6 +100,8 @@ float noise3(vec3 p) {
 }
 
 void main() {
+  #include <logdepthbuf_fragment>
+
   vec3 sampleP = vLocalPos * 3.4 + vec3(0.0, -uTime * 2.8, uTime * 1.1);
   float swirl = 0.65 * noise3(sampleP) + 0.35 * noise3(sampleP * 2.2);
   float ndotv = clamp(abs(dot(normalize(vNormalDir), normalize(vViewDir))), 0.0, 1.0);
@@ -116,11 +125,16 @@ void main() {
 `;
 
 const SHOCKWAVE_FRAG = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_fragment>
+
 uniform float uProgress;
 uniform vec3 uColor;
 varying vec2 vUv;
 
 void main() {
+  #include <logdepthbuf_fragment>
+
   float r = length(vUv - 0.5) * 2.0;
   float ring = smoothstep(0.55, 0.85, r) * (1.0 - smoothstep(0.88, 1.0, r));
   float alpha = ring * (1.0 - smoothstep(0.2, 1.0, uProgress)) * 0.85;
@@ -132,10 +146,14 @@ void main() {
 `;
 
 const SHOCKWAVE_VERT = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_vertex>
+
 varying vec2 vUv;
 void main() {
   vUv = uv;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  #include <logdepthbuf_vertex>
 }
 `;
 

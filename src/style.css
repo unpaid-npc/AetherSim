@@ -621,6 +621,17 @@ body {
   color: var(--text-muted);
 }
 
+.orbital-telemetry-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  border-top: 1px solid rgba(56, 189, 248, 0.16);
+  padding-top: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
 .webcast-footer {
   display: flex;
   align-items: center;
@@ -642,6 +653,35 @@ body {
 
 .status-pill strong {
   color: var(--text-primary);
+}
+
+.booster-rtls-pill {
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(148, 178, 214, 0.25);
+  background: rgba(15, 23, 42, 0.72);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.booster-rtls-pill.rtls-active {
+  border-color: rgba(251, 146, 60, 0.65);
+  background: rgba(251, 146, 60, 0.16);
+  color: #fdba74;
+}
+
+.booster-rtls-pill.rtls-ok {
+  border-color: rgba(52, 211, 153, 0.65);
+  background: rgba(52, 211, 153, 0.16);
+  color: var(--ok);
+}
+
+.booster-rtls-pill.rtls-fail {
+  border-color: rgba(248, 113, 113, 0.65);
+  background: rgba(248, 113, 113, 0.18);
+  color: var(--danger);
 }
 
 .gpu-label {

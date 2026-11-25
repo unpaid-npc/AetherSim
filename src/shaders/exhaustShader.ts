@@ -1,6 +1,9 @@
 import * as THREE from "three";
 
 const EXHAUST_VERTEX_SHADER = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_vertex>
+
 uniform float uTime;
 uniform float uThrottle;
 uniform float uPressureBar;
@@ -27,10 +30,14 @@ void main() {
   pos.y = pos.y * uPlumeLength * (0.4 + 0.6 * uThrottle);
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  #include <logdepthbuf_vertex>
 }
 `;
 
 const EXHAUST_FRAGMENT_SHADER = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_fragment>
+
 uniform float uTime;
 uniform float uThrottle;
 uniform float uPressureBar;
@@ -57,6 +64,8 @@ float noise2(vec2 p) {
 }
 
 void main() {
+  #include <logdepthbuf_fragment>
+
   if (uThrottle <= 0.01) {
     discard;
   }
