@@ -9,8 +9,8 @@ function cspMetaPlugin(): Plugin {
     },
     transformIndexHtml(html) {
       const policy = isServe
-        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' http://127.0.0.1:5173; worker-src 'self' blob: http://127.0.0.1:5173; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173;"
-        : "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';";
+        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' blob: http://127.0.0.1:5173; worker-src 'self' blob: http://127.0.0.1:5173; style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; img-src 'self' data: blob:; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 blob: data:;"
+        : "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self';";
 
       return html.replace(
         "<head>",
@@ -23,10 +23,51 @@ function cspMetaPlugin(): Plugin {
 export default defineConfig({
   base: "./",
   plugins: [cspMetaPlugin()],
+  css: {
+    postcss: {
+      plugins: [],
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    watch: {
+      ignored: [
+        "**/venv/**",
+        "**/release/**",
+        "**/dist/**",
+        "**/archive/**",
+        "**/results/**",
+        "**/docs/**",
+        "**/videos/**",
+        "**/models/**",
+        "**/logs/**",
+        "**/__pycache__/**",
+        "**/.pytest_cache/**",
+      ],
+    },
+    warmup: {
+      clientFiles: [
+        "./index.html",
+        "./src/main.ts",
+        "./src/style.css",
+        "./src/scene/SceneManager.ts",
+      ],
+    },
+  },
+  optimizeDeps: {
+    entries: ["index.html"],
+    include: [
+      "three",
+      "gsap",
+      "three/addons/controls/OrbitControls.js",
+      "three/addons/postprocessing/EffectComposer.js",
+      "three/addons/postprocessing/RenderPass.js",
+      "three/addons/postprocessing/UnrealBloomPass.js",
+      "three/addons/postprocessing/ShaderPass.js",
+      "three/addons/postprocessing/OutputPass.js",
+    ],
   },
   build: {
     target: "es2022",

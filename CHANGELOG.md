@@ -9,6 +9,25 @@ All notable changes to **AetherSim** are documented in this file following [Keep
 
 ---
 
+## [1.1.0] — 2026-11-25
+### Added
+- **Planet-Scale 3D Globes & Seamless Surface-to-Space Zoom (`PlanetGlobe.ts`, `PlanetGlobeTextures.ts`, `earthGeography.ts`, `planetLimbShader.ts`, `TerrainSystem.ts`, `CameraDirector.ts`)**:
+  - Modeled complete `1:50`-scaled 3D globes for Moon (`34,748 m`), Mars (`67,790 m`), and Earth (`127,420 m`) rotated cleanly so each complex sits at zenith `(0, 0, 0)`, featuring curved local terrain, anti-aliased Earth continents/oceans/clouds/night-lights, Mars canyons/volcanoes/polar caps, Lunar maria/ray craters, atmospheric Fresnel limb shader, and Google-Earth-style `C5 ORBIT` zoom.
+- **Spherical Central-Body Orbital Mechanics & Insertion Autopilot (`src/sim/OrbitalMechanics.ts`, `src/sim/FlightController.ts`)**:
+  - Upgraded `launch` physics to Velocity-Verlet spherical gravity ($\mu = g_0 R_{\text{sim}}^2$), radial surface contact, vacuum density cutoff above `atmosphereTopM`, Keplerian `Ap`/`Pe`/`e`/period calculations, `1x | 2x | 5x | 10x` Time Warp (`[`/`]`), and closed-loop gravity-turn → `ORBIT_INSERTION` → `COAST_TO_AP` → `CIRCULARIZATION` → `ORBIT_ACHIEVED` guidance across Mars, Earth, and Moon.
+- **3D Orbital Path Visualizer, `C6 MAP` Camera & Orbital HUD (`src/scene/OrbitVisualizer.ts`, `src/main.ts`, `src/style.css`)**:
+  - Added toggleable dashed Target Parking Orbit Ring, dynamic predicted trajectory arc (amber/cyan/emerald), spacecraft flight trail, constant-screen-scale `SHIP`/`AP`/`PE`/`PAD` markers, `C6 MAP` (`F6`) orbital overview camera, orbital telemetry strip (`APOAPSIS`, `PERIAPSIS`, `ECCENTRICITY`, `TARGET ORBIT`), and `ORBIT ACHIEVED` status banner.
+- **Orbital & Planet-Scale Test Suites (`src/__tests__/planetScale.test.ts`, `src/__tests__/orbitalMechanics.test.ts`)**:
+  - Expanded Vitest suite to `7` files / `27` tests (`0` failures), verifying circular/elliptical/suborbital trajectories and full headless Mars/Earth/Moon launch-to-orbit circularization.
+
+### Fixed & Improved
+- **Stage 5A Visual Transition Seams (`PlanetGlobeTextures.ts`, `TerrainSystem.ts`, `PlanetGlobe.ts`, `atmosphereShader.ts`, `SceneManager.ts`)**:
+  - Eliminated blocky coastlines via quadratic spline continent smoothing + bilinear shelf blending, added `6–20 km` local-terrain opacity cross-fade matching outer vertex colors to coastal globe tones, and shifted global clouds to `4–14 km` with fog cleared above `3.5 km`.
+- **Desktop Dev-Mode Black-Screen Fix & Hardened Boot (`vite.config.ts`, `electron/main.cjs`, `src/main.ts`)**:
+  - Ignored `venv/` and build artifacts in Vite's file watcher and disabled unnecessary PostCSS config probing, added transient `net::ERR_NETWORK_CHANGED` dev reload recovery, fail-safe DOM startup banner, interactive startup watchdog, and backbuffer `gl.readPixels` verification in `--smoke-test` (`bootMs: 261 ms` dev / `260 ms` prod, `SMOKE_OK`).
+
+---
+
 ## [1.0.1] — 2026-11-25
 ### Fixed & Improved
 - **PPO Policy Collapse & Actor/Critic Gradient Isolation (`src/ai/NeuralNetwork.ts`, `src/ai/PPOTrainer.ts`)**:

@@ -64,7 +64,7 @@ export function isLaunchSuccess(tel: FlightTelemetry): boolean {
   if (tel.missionMode !== "launch" || tel.phase === "CRASHED") {
     return false;
   }
-  if (tel.phase === "COMPLETE") {
+  if (tel.phase === "COMPLETE" || tel.phase === "ORBIT_ACHIEVED") {
     return true;
   }
   const tiltDeg = (Math.hypot(tel.pitch, tel.roll) * 180) / Math.PI;

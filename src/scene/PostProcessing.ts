@@ -31,7 +31,6 @@ const SchlierenHeatShader = {
       vec2 uv = vUv;
       if (uIntensity > 0.005) {
         vec2 delta = uv - uNozzleUv;
-        // Elongated heat plume region below the projected nozzle exit
         float belowMask = smoothstep(0.03, -0.26, delta.y);
         float coneWidth = 0.035 + max(0.0, -delta.y) * 0.28;
         float horizMask = 1.0 - smoothstep(coneWidth * 0.35, coneWidth, abs(delta.x));
@@ -47,9 +46,10 @@ const SchlierenHeatShader = {
   `,
 };
 
-/** Manages UnrealBloom + Schlieren heat distortion post-processing scaled by quality preset. */
+/** Manages UnrealBloom + Schlieren heat distortion with WebGL2 4x MSAA HalfFloat target. */
 export class PostProcessingPipeline {
   private readonly renderer: THREE.WebGLRenderer;
+  private readonly renderTarget: THREE.WebGLRenderTarget;
   private readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
   private readonly bloomPass: UnrealBloomPass;
@@ -66,7 +66,15 @@ export class PostProcessingPipeline {
     height: number
   ) {
     this.renderer = renderer;
-    this.composer = new EffectComposer(renderer);
+    this.renderTarget = new THREE.WebGLRenderTarget(
+      Math.max(1, width),
+      Math.max(1, height),
+      {
+        type: THREE.HalfFloatType,
+        samples: 4,
+      }
+    );
+    this.composer = new EffectComposer(renderer, this.renderTarget);
 
     this.renderPass = new RenderPass(scene, camera);
     this.bloomPass = new UnrealBloomPass(
@@ -88,11 +96,13 @@ export class PostProcessingPipeline {
   setQuality(quality: QualityPreset): void {
     this.quality = quality;
     if (quality === "med") {
+      this.renderTarget.samples = 4;
       this.bloomPass.strength = 0.42;
       this.bloomPass.radius = 0.55;
       this.bloomPass.threshold = 0.92;
       this.schlierenPass.enabled = true;
     } else if (quality === "high") {
+      this.renderTarget.samples = 4;
       this.bloomPass.strength = 0.52;
       this.bloomPass.radius = 0.62;
       this.bloomPass.threshold = 0.88;
@@ -127,5 +137,6 @@ export class PostProcessingPipeline {
     this.schlierenPass.dispose();
     this.outputPass.dispose();
     this.composer.dispose();
+    this.renderTarget.dispose();
   }
 }
