@@ -121,6 +121,19 @@ This document defines the repository's Git workflow and tracks progress across *
 
 ---
 
+### Hotfix `v1.0.1` — AI Policy Stability, Session Worker Sync, HUD Clarity & Visual Showcase (`v1.0.1`) — **COMPLETE & VERIFIED**
+- **Branches:** `hotfix/v1.0.1-ai-stability-and-clarity` & `docs/v1.0.1-media-and-readme-sync`
+- **Implemented Scope:**
+  - **PPO Policy Collapse & Gradient Isolation (`NeuralNetwork.ts`, `PPOTrainer.ts`):** Decoupled Actor (`stepAdamActor`) and Critic (`stepAdamCritic`) BC updates with 1-round DAgger pass, lowered post-warm-start exploration (`logStd = -1.6`), cleared Adam momentum (`resetOptimizerState()`), constrained fine-tuning LR/KL/entropy, and added deterministic 5-seed `BestBrainSummary` + collapse recovery guard.
+  - **Session Worker Sync & `padDeckY` Parity (`ppoWorker.ts`, `PPOWorkerClient.ts`, `FlightController.ts`, `RLEnvironment.ts`, `SceneManager.ts`):** Added incrementing `sessionId` staleness filtering across all worker messages, propagated exact planet `padDeckY` in `configureRLSpawn()`, and aligned live 3D landing max steps (`700`).
+  - **Crystal-Clear AI HUD & Visual Showcase (`src/main.ts`, `src/style.css`, `docs/media/`, `README.md`):** Added color-coded pulsing AI status banner, `Brain Status` scorecard, version sync to `package.json` (`1.0.1`), 6 web-optimized `1600×825` screenshots, and `4.98 MB` Moon propulsive landing GIF under [`docs/media/`](media/).
+- **Verification Gate Results (`v1.0.1`):**
+  - `npm run test`: **5 test files, 19 tests passed (`0` failures)** (`ppoAI.test.ts`: Earth landing warm-start **`100%` safe / `60%` nominal (`257.1` return)** preserved after `4,096` PPO steps).
+  - `npm run build`: **`tsc --noEmit && vite build` passed (`0` errors)** across `47` modules in `429 ms`.
+  - `node scripts/launch-desktop.mjs --prod --smoke-test`: **`SMOKE_OK`**, `version: "1.0.1"`, `0` errors, `0` warnings.
+
+---
+
 ### Phase B & Phase C — 14-Module Ecosystem Horizon (Post-`v1.0`) — **PLANNED ARCHITECTURE**
 - **Phase B (Co-Simulation & Expanded Physics):** Spherical rotating-planet N-body orbital propagator, FMI 3.0 / FMU and OMG DDS interfaces, Mars-GRAM/US76 wind & thermal/TPS models, EKF navigation + convex powered-descent guidance, independent IIP corridor / AFSS monitor, and UQ-bounded PINN aerodynamic surrogates.
 - **Phase C (HIL FlatSat & Research Benchmarks):** Deterministic RTOS/FPGA HIL FlatSat bridge with hardware bus emulation, closed-loop ECLSS models, and exploratory offline quantum/QAOA trajectory-optimization benchmarks compared against classical convex solvers.

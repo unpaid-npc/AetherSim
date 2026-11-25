@@ -1,13 +1,41 @@
 # AetherSim
 
-**AetherSim (`v1.0.0`)** is a real-time 3D aerospace launch, propulsive landing, live neural-network RL, and flight-research desktop simulator built with **Electron**, **Three.js**, **TypeScript**, **GLSL**, **GSAP**, and **Web Audio**.
+**AetherSim (`v1.0.1`)** is a real-time 3D aerospace launch, propulsive landing, live neural-network RL, and flight-research desktop simulator built with **Electron**, **Three.js**, **TypeScript**, **GLSL**, **GSAP**, and **Web Audio**.
 
 > [!NOTE]
-> **Phase A Runnable Desktop Simulator (`v1.0.0`) vs. Phase B/C Ecosystem Architecture:** What runs today (`npm run desktop`, `npm run dist:win`) is the complete, verified **Phase A Desktop Simulator** covering **Milestones 1–4** (`v0.2.0` → `v1.0.0`). The repository also documents a **14-Module Aerospace Simulation Ecosystem Reference Architecture** ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) guiding future Phases B & C. Every section below explicitly separates **implemented & verified** features from **planned** ecosystem work.
+> **Phase A Runnable Desktop Simulator (`v1.0.1`) vs. Phase B/C Ecosystem Architecture:** What runs today (`npm run desktop`, `npm run dist:win`) is the complete, verified **Phase A Desktop Simulator** covering **Milestones 1–4 + Hotfix `v1.0.1`** (`v0.2.0` → `v1.0.1`). The repository also documents a **14-Module Aerospace Simulation Ecosystem Reference Architecture** ([`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) guiding future Phases B & C. Every section below explicitly separates **implemented & verified** features from **planned** ecosystem work.
 
 ---
 
-## Implemented & Verified Capabilities (`AetherSim v1.0.0`)
+## Visual Showcase
+
+<p align="center">
+  <img src="docs/media/moon-landing-demo.gif" alt="AetherSim Moon Shackleton Crater multi-camera propulsive landing demo" width="720" />
+</p>
+<p align="center">
+  <em>Moon Shackleton Crater propulsive landing showcase at 60 FPS: <code>C3 ENGINE</code> aft nozzle view &rarr; <code>C5 ORBIT</code> final descent, lunar regolith blast cloud, landing leg deployment, and <code>NOMINAL LANDING</code> touchdown.</em>
+</p>
+
+<!-- Optional: paste a GitHub drag-and-drop HD MP4 user-attachments URL below for native inline 1080p video playback -->
+
+| Mars Prelaunch Complex (`3.72 m/s²`) | Earth Starbase Orbital Launch Mount (`9.81 m/s²`) |
+| :---: | :---: |
+| ![Mars Prelaunch](docs/media/mars-prelaunch.jpg) | ![Earth Prelaunch](docs/media/earth-prelaunch.jpg) |
+| *Jezero / Arcadia octagonal blast deck, servicing tower, cryogenic venting, and geodesic ISRU outpost at 60 FPS.* | *Boca Chica `18 m` OLM, `145 m` Mechazilla tower with chopstick catch arms, umbilical, and cryo tank farm at 60 FPS.* |
+
+| Moon Shackleton South Pole (`1.63 m/s²`) | Earth Full-Stack Liftoff (`T+00:04.5`) |
+| :---: | :---: |
+| ![Moon Prelaunch](docs/media/moon-prelaunch.jpg) | ![Earth Liftoff](docs/media/earth-liftoff.jpg) |
+| *Sintered lunar pad with `360°` ejecta blast berm, Artemis solar outpost on crater rim, and hard-vacuum starfield.* | *33-Raptor Mach-diamond plume, ground steam/dust cloud, retracted umbilical (`86.9 m`, `1.86 g`), and `PRE-TRAINED` AI status.* |
+
+| Earth Hot-Stage Separation (`T+00:27.4`) | Moon Propulsive Flip-Burn (`ALT 66.5 m`) |
+| :---: | :---: |
+| ![Earth Stage Separation](docs/media/earth-stage-sep.jpg) | ![Moon Landing](docs/media/moon-landing.jpg) |
+| *Ship vacuum burn into `ORBIT_INSERTION` (`2.86 km`, `225.9 m/s`, `2.12 g`) above detached Super Heavy booster.* | *Shackleton final approach (`FLIP_BURN`, `-10.8 m/s`, `0.24 g`) with lunar vacuum expansion plume and `PRE-TRAINED` scorecard.* |
+
+---
+
+## Implemented & Verified Capabilities (`AetherSim v1.0.1`)
 
 ### 1. Multi-Planet Physics & Procedural Worlds (`src/config/planets.ts`, `src/scene/`)
 Three planetary launch & landing complexes parameterized with NASA Planetary Fact Sheet constants:
@@ -55,17 +83,17 @@ Three planetary launch & landing complexes parameterized with NASA Planetary Fac
 
 ---
 
-## Verified Build, Test & Packaging Checks (`v1.0.0`)
+## Verified Build, Test & Packaging Checks (`v1.0.1`)
 
-Measured directly on this repository for `v1.0.0`:
+Measured directly on this repository for `v1.0.1`:
 
 | Check | Command | Verified Result |
 | :--- | :--- | :--- |
-| **Vitest Unit & PPO Convergence Suite** | `npm run test` | **Passed (`5` files, `18` tests, `0` failures)** in `4.24 s` (`planets`, `noise`, `flightController`, `researchWorkbench`, `ppoAI`: Pure PPO throughput `39,128 steps/s`, mean return `-2293.23 → -601.77`) |
-| **TypeCheck & Vite Production Build** | `npm run build` | **Passed (`0` errors)**; `46` modules transformed in `468 ms` (`dist/index.html`, `ppoWorker-Bf-YmtTa.js` `58.10 kB`, `index-Covyjguj.js` `875.20 kB`, `index-DfRzH7Ab.css` `8.27 kB`) |
+| **Vitest Unit, RL & Anti-Collapse Suite** | `npm run test` | **Passed (`5` files, `19` tests, `0` failures)** (`planets`, `noise`, `flightController`, `researchWorkbench`, `ppoAI`: Pure PPO `42,707 steps/s` `-2293.23 → -601.77`; Earth landing warm-start `100%` safe / `60%` nominal before & after `4,096` PPO steps) |
+| **TypeCheck & Vite Production Build** | `npm run build` | **Passed (`0` errors)**; `47` modules transformed in `429 ms` (`dist/index.html`, `ppoWorker-CSJhRYmj.js` `65.22 kB`, `index-BDzgi-GZ.js` `891.44 kB`, `index-CKffavab.css` `9.83 kB`) |
 | **GitHub Actions CI** | `.github/workflows/ci.yml` | Runs `npm ci`, `npm run test`, and `npm run build` on `push` / `pull_request` (`main`, `develop`) |
-| **Windows Portable Desktop Build** | `npm run dist:win` | Built [`release/AetherSim-1.0.0-win-x64-portable.exe`](release/AetherSim-1.0.0-win-x64-portable.exe) (`112,092,430 bytes` / **`106.90 MB`**) + `release/win-unpacked/AetherSim.exe` |
-| **Packaged Executable Smoke Check** | `ELECTRON_SMOKE_TEST=1` on `release/win-unpacked/AetherSim.exe` | **`SMOKE_OK`**, exit code `0`, `0` errors, `0` warnings, title `"AetherSim — 3D Aerospace Launch & Landing Simulator"`, `hasDesktopBridge: true`, `1426×779`, `123` draw calls, `62,759` triangles |
+| **Electron Desktop Smoke Check** | `node scripts/launch-desktop.mjs --prod --smoke-test` | **`SMOKE_OK`**, exit code `0`, `0` errors, `0` warnings, title `"AetherSim — 3D Aerospace Launch & Landing Simulator"`, **`version: "1.0.1"`**, `1426×779`, `123` draw calls, `62,759` triangles |
+| **Windows Portable Desktop Build** | `npm run dist:win` | Packaged & smoke-verified `AetherSim-1.0.0-win-x64-portable.exe` (`112,092,430 bytes` / **`106.90 MB`**) in `v1.0.0`; rebuild `v1.0.1` portable `.exe` anytime via `npm run dist:win` |
 
 ---
 
@@ -154,7 +182,7 @@ Milestone 0 (`v0.1.0`) remains preserved under [`archive/legacy-rl-2d/`](archive
 
 ## Limitations & Simulation Fidelity Disclaimer
 
-AetherSim `v1.0.0` is a **real-time interactive engineering, visualization, and RL research simulator (Phase A)**, **not a flight-qualified verification tool**:
+AetherSim `v1.0.1` is a **real-time interactive engineering, visualization, and RL research simulator (Phase A)**, **not a flight-qualified verification tool**:
 - **Simplified Flight Dynamics**: Uses a local-tangent-plane rigid-body 6-DOF-inspired integrator (`FlightController.ts`) rather than spherical rotating-planet orbital mechanics, coupled propellant slosh, or flexible-body structural modes.
 - **Real-Time Shader Approximations**: GLSL Mach-diamond plumes, Schlieren shimmer, and Rayleigh/Mie skies are visually physically inspired approximations—not Navier-Stokes CFD, DSMC rarefied gas dynamics, or thermal FEA.
 - **No Flight Certification**: The software has **not** undergone DO-178C, NPR 7150.2, NASA-STD-7009 formal VVUQ, HIL qualification, or AFSS range-safety certification and **must never be used for operational flight decisions**.
@@ -170,7 +198,7 @@ AetherSim `v1.0.0` is a **real-time interactive engineering, visualization, and 
 | [`docs/PERFORMANCE_REPORT.md`](docs/PERFORMANCE_REPORT.md) | Measured Electron GPU/FPS profiling report across Mars/Earth/Moon × `LOW/MED/HIGH` (`results/v1_performance_profile.json`) |
 | [`docs/MILESTONES.md`](docs/MILESTONES.md) | Git branching strategy and complete Milestones 0–4 + Phase B/C tracker |
 | [`docs/VALIDATION_AND_SAFETY.md`](docs/VALIDATION_AND_SAFETY.md) | VVUQ framework, PINN/RL OOD bounds, Clopper-Pearson & Wilks Monte Carlo criteria, safety gates |
-| [`CHANGELOG.md`](CHANGELOG.md) | Versioned release history (`v0.1.0` → `v1.0.0`) |
+| [`CHANGELOG.md`](CHANGELOG.md) | Versioned release history (`v0.1.0` → `v1.0.1`) |
 
 ### Roadmap Overview
 
@@ -181,4 +209,5 @@ AetherSim `v1.0.0` is a **real-time interactive engineering, visualization, and 
 | **Milestone 2** | `v0.4.0` | **Complete & Verified** | Pure-TS `Float32Array` Continuous PPO Neural Network, live 3D learning-from-crashes & Web Worker trainer |
 | **Milestone 3** | `v0.5.0` | **Complete & Verified** | Research Workbench (live plots, NN visualizer, fault injection, Monte Carlo, CSV/JSON), GSAP cameras, Web Audio |
 | **Milestone 4** | `v1.0.0` | **Complete & Verified** | Multi-planet benchmark harness, Electron GPU/FPS profiler, GitHub Actions CI, Windows `.exe` packaging (`electron-builder`) |
+| **Hotfix / Docs** | `v1.0.1` | **Complete & Verified** | PPO anti-collapse best-checkpoint guard, session worker sync, `padDeckY` parity, AI status HUD & visual showcase |
 | **Phases B & C** | Post-`v1.0` | **Planned Ecosystem** | FMI/FMU & DDS co-simulation, spherical astrodynamics, offline CFD/FEA surrogates, AFSS, ECLSS, RTOS/HIL FlatSat |
