@@ -1,11 +1,17 @@
+const fs = require("node:fs");
 const path = require("node:path");
 const { app, BrowserWindow, session } = require("electron");
 
 const isSmokeTest = process.env.ELECTRON_SMOKE_TEST === "1";
+const isProfile = process.env.ELECTRON_PROFILE === "1";
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 
 app.commandLine.appendSwitch("enable-webgl");
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
+if (isProfile) {
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+}
 
 const mainErrors = [];
 
@@ -41,6 +47,9 @@ function installDevCspHeaders() {
 }
 
 function createWindow() {
+  const icoPath = path.join(__dirname, "..", "build", "icon.ico");
+  const icon = fs.existsSync(icoPath) ? icoPath : undefined;
+
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -48,6 +57,7 @@ function createWindow() {
     minHeight: 680,
     title: "AetherSim — 3D Aerospace Launch & Landing Simulator",
     backgroundColor: "#05070d",
+    icon,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -75,7 +85,7 @@ function createWindow() {
     const sourceId = event.sourceId;
     if (level === "error" || level >= 3) {
       rendererErrors.push(`console.error (${sourceId}:${line}): ${message}`);
-    } else if (level === "warning" || level === 2) {
+    } else if (level === "warning" || level >= 2) {
       rendererWarnings.push(`console.warn (${sourceId}:${line}): ${message}`);
     }
   });
@@ -133,6 +143,55 @@ function createWindow() {
           app.exit(1);
         }
       }, 4000);
+    });
+  } else if (isProfile) {
+    win.webContents.once("did-finish-load", () => {
+      setTimeout(async () => {
+        try {
+          const results = await win.webContents.executeJavaScript(`
+            (async () => {
+              const api = window.__AETHERSIM_PROFILER__;
+              if (!api) {
+                throw new Error('Missing window.__AETHERSIM_PROFILER__');
+              }
+              const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+              const planets = ['mars', 'earth', 'moon'];
+              const qualities = ['low', 'med', 'high'];
+              const samples = [];
+              for (const planet of planets) {
+                api.setPlanet(planet);
+                for (const quality of qualities) {
+                  api.setQuality(quality);
+                  await sleep(600);
+                  const stats = await api.sampleFrames(3000);
+                  samples.push({ planet, quality, ...stats });
+                }
+              }
+              return samples;
+            })()
+          `);
+          const allErrors = [...mainErrors, ...rendererErrors];
+          const ok = allErrors.length === 0 && Array.isArray(results) && results.length === 9;
+          console.log("PROFILE_JSON_START");
+          console.log(
+            JSON.stringify(
+              {
+                profileStatus: ok ? "PROFILE_OK" : "PROFILE_FAIL",
+                samples: results,
+                warnings: rendererWarnings,
+                errors: allErrors,
+              },
+              null,
+              2
+            )
+          );
+          console.log("PROFILE_JSON_END");
+          app.exit(ok ? 0 : 1);
+        } catch (err) {
+          console.error("PROFILE_FAIL:", err);
+          app.exit(1);
+        }
+      }, 2200);
     });
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "aethersim",
-  "version": "0.5.0",
+  "version": "1.0.1",
   "description": "AetherSim — Real-time 3D aerospace launch, propulsive landing, and planetary flight simulator built with Electron, Three.js, TypeScript, and custom GLSL shaders.",
   "private": true,
   "type": "module",
@@ -11,7 +11,48 @@
     "desktop:prod": "npm run build && node scripts/launch-desktop.mjs --prod",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "benchmark": "node scripts/run-benchmark.mjs",
+    "profile:desktop": "npm run build && node scripts/profile-desktop.mjs",
+    "generate:icon": "node scripts/generate-icon.mjs",
+    "dist:win:dir": "npm run build && electron-builder --win dir",
+    "dist:win": "npm run build && electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.unpaidnpc.aethersim",
+    "productName": "AetherSim",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.ico",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "AetherSim-${version}-win-x64-portable.exe"
+    }
   },
   "dependencies": {
     "gsap": "^3.15.1",

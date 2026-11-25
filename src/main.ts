@@ -1,4 +1,5 @@
 import "./style.css";
+import pkg from "../package.json";
 import type { PolicyCheckpoint } from "./ai/NeuralNetwork";
 import { PLANET_ORDER, type PlanetId, getPlanetConfig } from "./config/planets";
 import type { QualityPreset } from "./effects/PropulsionEffects";
@@ -17,6 +18,8 @@ import {
   type SceneTelemetry,
 } from "./scene/SceneManager";
 import type { FaultConfig } from "./sim/FaultInjector";
+
+const APP_VERSION = pkg.version;
 
 type ResearchTab = "plots" | "nn" | "faults" | "mc" | "export";
 
@@ -109,6 +112,7 @@ function bootstrap(): void {
       updateUI(telemetry);
       window.__STARSHIP_SIM__ = {
         ready: true,
+        version: APP_VERSION,
         planet: sceneManager.getPlanet().id,
         missionMode: telemetry.flight.missionMode,
         controlMode: telemetry.flight.controlMode,
@@ -122,6 +126,8 @@ function bootstrap(): void {
         drawCalls: telemetry.drawCalls,
         triangles: telemetry.triangles,
         aiState: telemetry.ai.mode,
+        aiBrainLevel: telemetry.ai.brainLevel,
+        aiBestSuccessPct: telemetry.ai.bestBrain.evalSuccessRatePct,
         aiEpisodes: telemetry.ai.metrics.episodesCompleted,
         aiTotalSteps: telemetry.ai.metrics.totalSteps,
         aiMeanReturn: telemetry.ai.metrics.rollingMeanReturn,
@@ -143,7 +149,7 @@ function bootstrap(): void {
   const brandGroup = el("div", "topbar-group");
   brandGroup.append(
     el("span", "brand-title", "AETHERSIM"),
-    el("span", "brand-stage", "v0.5.0 · Research Workbench")
+    el("span", "brand-stage", `v${APP_VERSION} · Research Workbench`)
   );
 
   // Planet pills
@@ -353,70 +359,91 @@ function bootstrap(): void {
   });
   flightActions.append(startBtn, pauseBtn, sepBtn, resetBtn, sasBtn, legsBtn, focusBtn);
 
-  // Guided 3-step AI Section
+  // Guided Neural AI Section (Hotfix v1.0.1 crystal-clear status & controls)
   const aiSection = el("div", "section-divider");
   const aiHead = el("div", "panel-header");
-  aiHead.append(el("span", "panel-title", "GUIDED NEURAL AI (PPO)"));
+  aiHead.append(el("span", "panel-title", "NEURAL AI PILOT (PPO)"));
   const aiStatePill = el("span", "ai-state-pill", "IDLE");
   aiHead.append(aiStatePill);
 
+  const aiStatusBanner = el("div", "ai-status-banner status-idle-untrained");
+  const aiStatusDot = el("span", "ai-status-dot");
+  const aiStatusText = el("span", "ai-status-banner-text", "IDLE — UNTRAINED BRAIN (Will Crash)");
+  aiStatusBanner.append(aiStatusDot, aiStatusText);
+
+  const aiStatusNote = el(
+    "div",
+    "ai-status-note",
+    "Untrained random brain. Click 1. PRE-TRAIN BRAIN or 2. FAST TRAIN."
+  );
+
+  // Clear Brain Status Scorecard
+  const aiScorecard = el("div", "ai-scorecard");
+  const makeScoreRow = (label: string) => {
+    const item = el("div", "telemetry-item");
+    const lbl = el("span", "telemetry-label", label);
+    const val = el("span", "telemetry-value", "-");
+    item.append(lbl, val);
+    aiScorecard.append(item);
+    return { lbl, val };
+  };
+  const aiBrainLevelRow = makeScoreRow("Brain Level");
+  const aiBestSuccessRow = makeScoreRow("Best Landing Success");
+  const aiEpRow = makeScoreRow("Train Episodes");
+  const aiRateRow = makeScoreRow("Worker Speed");
+  const aiMeanRetRow = makeScoreRow("Live Rollout Ret");
+  const aiBestRetRow = makeScoreRow("Best Eval Return");
+
   const guidedStack = el("div", "ai-guided-stack");
-  const liveTrainBtn = el(
+  const warmStartBtn = el(
     "button",
     "action-btn primary",
-    "1. WATCH AI LEARN (3D)",
-    "Watch Starship fly live in 3D, crash/explode, update neural weights, and retry automatically"
+    "1. PRE-TRAIN BRAIN (FAST)",
+    "Pre-train the neural network via Behavior Cloning + DAgger (~1–2s), evaluate 5 trials, and save the best brain"
   );
-  liveTrainBtn.type = "button";
-  liveTrainBtn.addEventListener("click", () => {
-    sceneManager.startLiveTrain();
+  warmStartBtn.type = "button";
+  warmStartBtn.addEventListener("click", () => {
+    sceneManager.startPreTrain();
     syncNow();
   });
 
   const turboTrainBtn = el(
     "button",
     "action-btn primary",
-    "2. FAST TRAIN (WORKER)",
-    "Turbo Train: trains the AI silently at 30,000+ steps/sec in a background Web Worker"
+    "2. FAST TRAIN (PPO)",
+    "Toggle background Web Worker PPO fine-tuning (safely preserves Best Saved Brain against collapse)"
   );
   turboTrainBtn.type = "button";
   turboTrainBtn.addEventListener("click", () => {
-    sceneManager.startTurboTrain();
+    sceneManager.toggleTurboTrain();
     syncNow();
   });
 
   const flyTrainedBtn = el(
     "button",
     "action-btn",
-    "3. FLY TRAINED AI",
-    "Fly Trained AI: disables randomness and watches the trained network fly deterministically in 3D"
+    "3. FLY TRAINED AI (3D)",
+    "One-click: pauses background training, loads Best Saved Brain, resets Starship & locks camera in 3D"
   );
   flyTrainedBtn.type = "button";
   flyTrainedBtn.addEventListener("click", () => {
     sceneManager.startAIEval();
     syncNow();
   });
-  guidedStack.append(liveTrainBtn, turboTrainBtn, flyTrainedBtn);
+  guidedStack.append(warmStartBtn, turboTrainBtn, flyTrainedBtn);
 
   const secondaryAiRow = el("div", "ai-secondary-row");
-  const pauseAiBtn = el("button", "action-btn", "PAUSE AI", "Pause background or live AI training");
-  pauseAiBtn.type = "button";
-  pauseAiBtn.addEventListener("click", () => {
-    sceneManager.pauseAI();
-    syncNow();
-  });
-  const warmStartBtn = el(
+  const liveTrainBtn = el(
     "button",
     "action-btn",
-    "PRE-TRAIN (WARM START)",
-    "Pre-train the neural network on classical guidance demos before PPO fine-tuning"
+    "WATCH AI CRASH & LEARN (3D)",
+    "Live 3D self-play: watch Starship crash, update PPO weights, and auto-retry"
   );
-  warmStartBtn.type = "button";
-  warmStartBtn.addEventListener("click", () => {
-    sceneManager.runWarmStartAndPPO();
+  liveTrainBtn.type = "button";
+  liveTrainBtn.addEventListener("click", () => {
+    sceneManager.startLiveTrain();
     syncNow();
   });
-  secondaryAiRow.append(pauseAiBtn, warmStartBtn);
 
   // Two-click safety guard on RESET AI BRAIN
   const resetBrainBtn = el(
@@ -446,23 +473,9 @@ function bootstrap(): void {
     clearResetConfirm();
     sceneManager.resetAIWeights();
     syncNow();
+    repaintResearchCanvases(true);
   });
-
-  // Compact RL metrics
-  const aiMetricsGrid = el("div", "ai-metrics-grid");
-  const makeAiMetric = (label: string) => {
-    const item = el("div", "telemetry-item");
-    const val = el("span", "telemetry-value", "-");
-    item.append(el("span", "telemetry-label", label), val);
-    aiMetricsGrid.append(item);
-    return val;
-  };
-  const aiEpVal = makeAiMetric("Episodes");
-  const aiRateVal = makeAiMetric("Worker Speed");
-  const aiMeanRetVal = makeAiMetric("Mean Return");
-  const aiSuccVal = makeAiMetric("Success %");
-  const aiCrashVal = makeAiMetric("Crash %");
-  const aiLossVal = makeAiMetric("Pi / V Loss");
+  secondaryAiRow.append(liveTrainBtn, resetBrainBtn);
 
   // Collapsible Advanced Hyperparameters
   const advToggleBtn = el("button", "action-btn", "▸ Advanced Hyperparameters", "Learning rate, domain randomization & checkpoint .json");
@@ -534,10 +547,11 @@ function bootstrap(): void {
 
   aiSection.append(
     aiHead,
+    aiStatusBanner,
+    aiStatusNote,
+    aiScorecard,
     guidedStack,
     secondaryAiRow,
-    resetBrainBtn,
-    aiMetricsGrid,
     advToggleBtn,
     advBody,
     aiErrBanner
@@ -763,7 +777,7 @@ function bootstrap(): void {
   expBundleBtn.addEventListener("click", () => {
     const tel = sceneManager.getFlightTelemetry();
     const json = buildExperimentBundleJSON({
-      aethersimVersion: "0.5.0",
+      aethersimVersion: APP_VERSION,
       planet: tel.planetId,
       mission: tel.missionMode,
       pilot: tel.controlMode,
@@ -906,14 +920,14 @@ function bootstrap(): void {
   const helpModal = el("div", "hud-card help-modal");
   helpModal.innerHTML = `
     <div class="panel-header">
-      <h3>AetherSim v0.5.0 — Quick Guide &amp; Controls</h3>
+      <h3>AetherSim v${APP_VERSION} — Quick Guide &amp; Controls</h3>
       <button type="button" class="action-btn" id="close-help-btn">CLOSE</button>
     </div>
     <p><strong>3-Step Neural AI Workflow:</strong></p>
     <ul>
-      <li><strong>1. Watch AI Learn (3D):</strong> Flies live in 3D with exploration—crashes/RUDs feed directly into PPO updates.</li>
-      <li><strong>2. Fast Train (Worker):</strong> Trains silently at 30,000+ steps/sec in a background Web Worker while keeping 60 FPS.</li>
-      <li><strong>3. Fly Trained AI:</strong> Disables randomness and evaluates the trained neural network deterministically in 3D.</li>
+      <li><strong>1. Pre-Train Brain (Fast):</strong> Imitates classical guidance (~1–2s), runs 5 deterministic evals, and saves the best brain.</li>
+      <li><strong>2. Fast Train (PPO):</strong> Fine-tunes silently in a background Web Worker while protecting the Best Saved Brain from collapse.</li>
+      <li><strong>3. Fly Trained AI (3D):</strong> One click pauses training, loads the Best Saved Brain, resets Starship, and flies deterministically in 3D.</li>
     </ul>
     <p><strong>Keyboard Shortcuts:</strong></p>
     <ul>
@@ -986,39 +1000,109 @@ function bootstrap(): void {
       sceneManager.getFocusMode() === "rocket" ? "FOCUS: ROCKET" : "FOCUS: PAD";
     manualHint.style.display = f.controlMode === "manual" ? "block" : "none";
 
-    // AI status
+    // Crystal-Clear AI Status Banner, Scorecard & Controls
     const ai = t.ai;
+    const m = ai.metrics;
+    const best = ai.bestBrain;
+
     aiStatePill.textContent =
-      ai.mode === "live_train"
-        ? "LIVE 3D"
-        : ai.mode === "turbo_train"
-          ? "WORKER"
-          : ai.mode === "eval"
-            ? "EVAL"
-            : "IDLE";
+      ai.mode === "pre_training"
+        ? "PRE-TRAIN"
+        : ai.mode === "live_train"
+          ? "LIVE 3D"
+          : ai.mode === "turbo_train"
+            ? "TRAINING"
+            : ai.mode === "eval"
+              ? "FLYING AI"
+              : "IDLE";
     aiStatePill.className = `ai-state-pill ${
-      ai.mode === "live_train" || ai.mode === "turbo_train"
+      ai.mode === "pre_training" || ai.mode === "live_train" || ai.mode === "turbo_train"
         ? "training"
         : ai.mode === "eval"
           ? "eval"
           : ""
     }`;
-    liveTrainBtn.classList.toggle("active", ai.mode === "live_train");
+
+    if (ai.mode === "pre_training") {
+      aiStatusBanner.className = "ai-status-banner status-pretrain";
+      aiStatusDot.className = "ai-status-dot pulsing";
+      aiStatusText.textContent = "PRE-TRAINING BRAIN... (Imitating Guidance)";
+    } else if (ai.mode === "turbo_train") {
+      aiStatusBanner.className = "ai-status-banner status-turbo";
+      aiStatusDot.className = "ai-status-dot pulsing";
+      aiStatusText.textContent = `TRAINING IN BACKGROUND... (Ep ${m.episodesCompleted} | ${m.stepsPerSec.toLocaleString("en-US")} st/s)`;
+    } else if (ai.mode === "live_train") {
+      aiStatusBanner.className = "ai-status-banner status-live";
+      aiStatusDot.className = "ai-status-dot pulsing";
+      aiStatusText.textContent = `WATCHING AI LEARN LIVE (3D Ep ${m.episodesCompleted})`;
+    } else if (ai.mode === "eval") {
+      aiStatusBanner.className = best.hasTrainedWeights
+        ? "ai-status-banner status-eval"
+        : "ai-status-banner status-idle-untrained";
+      aiStatusDot.className = "ai-status-dot";
+      aiStatusText.textContent = best.hasTrainedWeights
+        ? "FLYING BEST TRAINED AI (DETERMINISTIC)"
+        : "FLYING UNTRAINED BRAIN (Will Crash)";
+    } else if (best.hasTrainedWeights) {
+      aiStatusBanner.className = "ai-status-banner status-idle-ready";
+      aiStatusDot.className = "ai-status-dot";
+      aiStatusText.textContent = `IDLE — READY (${best.evalSafeRatePct.toFixed(0)}% Safe · ${best.evalSuccessCount}/${best.evalEpisodes} Nom)`;
+    } else {
+      aiStatusBanner.className = "ai-status-banner status-idle-untrained";
+      aiStatusDot.className = "ai-status-dot";
+      aiStatusText.textContent = "IDLE — UNTRAINED BRAIN (Will Crash)";
+    }
+
+    aiStatusNote.textContent = ai.statusMessage;
+
+    warmStartBtn.disabled = ai.mode === "pre_training";
+    warmStartBtn.textContent =
+      ai.mode === "pre_training" ? "PRE-TRAINING..." : "1. PRE-TRAIN BRAIN (FAST)";
+    turboTrainBtn.textContent =
+      ai.mode === "turbo_train" ? "STOP TRAINING" : "2. FAST TRAIN (PPO)";
+    turboTrainBtn.classList.toggle("btn-stop-active", ai.mode === "turbo_train");
     turboTrainBtn.classList.toggle("active", ai.mode === "turbo_train");
     flyTrainedBtn.classList.toggle("active", ai.mode === "eval");
+    liveTrainBtn.textContent =
+      ai.mode === "live_train" ? "STOP LIVE 3D" : "WATCH AI CRASH & LEARN (3D)";
+    liveTrainBtn.classList.toggle("active", ai.mode === "live_train");
+
     randBtn.classList.toggle("active", ai.randomizeSpawn);
     randBtn.textContent = ai.randomizeSpawn ? "RAND: ON" : "RAND: OFF";
     for (const [lr, b] of lrBtns.entries()) {
       b.classList.toggle("active", Math.abs(ai.learningRate - lr) < 1e-6);
     }
 
-    const m = ai.metrics;
-    aiEpVal.textContent = `${m.episodesCompleted}`;
-    aiRateVal.textContent = `${m.stepsPerSec} st/s`;
-    aiMeanRetVal.textContent = m.rollingMeanReturn.toFixed(1);
-    aiSuccVal.textContent = `${m.landingSuccessRatePct.toFixed(0)}%`;
-    aiCrashVal.textContent = `${m.crashRatePct.toFixed(0)}%`;
-    aiLossVal.textContent = `${m.policyLoss.toFixed(3)}/${m.valueLoss.toFixed(1)}`;
+    const levelLabel =
+      ai.brainLevel === "ppo_trained"
+        ? "PPO TRAINED"
+        : ai.brainLevel === "pre_trained"
+          ? "PRE-TRAINED"
+          : "UNTRAINED";
+    aiBrainLevelRow.val.textContent = levelLabel;
+    aiBrainLevelRow.val.className = `telemetry-value brain-level-badge ${ai.brainLevel}`;
+
+    aiBestSuccessRow.lbl.textContent =
+      f.missionMode === "landing" ? "Best Landing" : "Best Launch";
+    if (!best.hasTrainedWeights || best.evalEpisodes === 0) {
+      aiBestSuccessRow.val.textContent = "Not Eval";
+    } else if (f.missionMode === "landing") {
+      aiBestSuccessRow.val.textContent =
+        best.evalSuccessCount === best.evalEpisodes
+          ? `100% (${best.evalEpisodes}/${best.evalEpisodes} nom)`
+          : `${best.evalSafeRatePct.toFixed(0)}% safe (${best.evalSuccessCount}/${best.evalEpisodes} nom)`;
+    } else {
+      aiBestSuccessRow.val.textContent = `${best.evalSuccessRatePct.toFixed(0)}% (${best.evalSuccessCount}/${best.evalEpisodes})`;
+    }
+
+    aiEpRow.val.textContent = `${m.episodesCompleted}`;
+    aiRateRow.val.textContent =
+      m.stepsPerSec > 0 ? `${m.stepsPerSec.toLocaleString("en-US")} st/s` : "0 st/s";
+    aiMeanRetRow.val.textContent =
+      m.episodesCompleted > 0 ? m.rollingMeanReturn.toFixed(1) : "—";
+    aiBestRetRow.val.textContent = best.hasTrainedWeights
+      ? best.evalMeanReturn.toFixed(1)
+      : "—";
 
     if (ai.lastError) {
       aiErrBanner.style.display = "block";
@@ -1090,6 +1174,7 @@ function bootstrap(): void {
     };
     updateUI(snap);
     if (window.__STARSHIP_SIM__) {
+      window.__STARSHIP_SIM__.version = APP_VERSION;
       window.__STARSHIP_SIM__.planet = snap.flight.planetId;
       window.__STARSHIP_SIM__.missionMode = snap.flight.missionMode;
       window.__STARSHIP_SIM__.controlMode = snap.flight.controlMode;
@@ -1098,6 +1183,8 @@ function bootstrap(): void {
       window.__STARSHIP_SIM__.sasEnabled = snap.flight.sasEnabled;
       window.__STARSHIP_SIM__.crashed = snap.flight.phase === "CRASHED";
       window.__STARSHIP_SIM__.aiState = snap.ai.mode;
+      window.__STARSHIP_SIM__.aiBrainLevel = snap.ai.brainLevel;
+      window.__STARSHIP_SIM__.aiBestSuccessPct = snap.ai.bestBrain.evalSuccessRatePct;
       window.__STARSHIP_SIM__.aiEpisodes = snap.ai.metrics.episodesCompleted;
       window.__STARSHIP_SIM__.aiTotalSteps = snap.ai.metrics.totalSteps;
       window.__STARSHIP_SIM__.aiMeanReturn = snap.ai.metrics.rollingMeanReturn;
@@ -1116,6 +1203,7 @@ function bootstrap(): void {
   const initialAI = sceneManager.getAIStatus();
   window.__STARSHIP_SIM__ = {
     ready: true,
+    version: APP_VERSION,
     planet: sceneManager.getPlanet().id,
     missionMode: initialTel.missionMode,
     controlMode: initialTel.controlMode,
@@ -1129,11 +1217,71 @@ function bootstrap(): void {
     drawCalls: 0,
     triangles: 0,
     aiState: initialAI.mode,
+    aiBrainLevel: initialAI.brainLevel,
+    aiBestSuccessPct: initialAI.bestBrain.evalSuccessRatePct,
     aiEpisodes: initialAI.metrics.episodesCompleted,
     aiTotalSteps: initialAI.metrics.totalSteps,
     aiMeanReturn: initialAI.metrics.rollingMeanReturn,
     cameraPreset: sceneManager.getCameraPreset(),
     audioMuted: sceneManager.isAudioMuted(),
+  };
+
+  window.__AETHERSIM_PROFILER__ = {
+    setPlanet: (id) => {
+      selectPlanet(id);
+    },
+    setQuality: (q) => {
+      sceneManager.setQualityPreset(q);
+      syncNow();
+    },
+    startMission: () => {
+      sceneManager.startMission();
+      syncNow();
+    },
+    resetMission: () => {
+      sceneManager.resetMission();
+      syncNow();
+    },
+    sampleFrames: (durationMs = 3000) =>
+      new Promise((resolve) => {
+        const frameDeltas: number[] = [];
+        let last = performance.now();
+        const start = last;
+        const step = (now: number) => {
+          const dtMs = now - last;
+          last = now;
+          if (dtMs > 0) {
+            frameDeltas.push(dtMs);
+          }
+          if (now - start >= durationMs && frameDeltas.length >= 2) {
+            const sorted = [...frameDeltas].sort((a, b) => a - b);
+            const p50 = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
+            const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1] ?? 0;
+            const elapsedSec = Math.max(0.001, (now - start) / 1000);
+            const rect = canvas.getBoundingClientRect();
+            const perfMem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+            const sim = window.__STARSHIP_SIM__;
+            resolve({
+              frames: frameDeltas.length,
+              durationMs: Math.round(now - start),
+              avgFps: frameDeltas.length / elapsedSec,
+              p50FrameMs: p50,
+              p95FrameMs: p95,
+              drawCalls: sim?.drawCalls ?? 0,
+              triangles: sim?.triangles ?? 0,
+              rendererName: sceneManager.getRendererName(),
+              jsHeapUsedMB: perfMem
+                ? Number((perfMem.usedJSHeapSize / (1024 * 1024)).toFixed(1))
+                : null,
+              canvasWidth: Math.round(rect.width),
+              canvasHeight: Math.round(rect.height),
+            });
+            return;
+          }
+          window.requestAnimationFrame(step);
+        };
+        window.requestAnimationFrame(step);
+      }),
   };
 
   // Keyboard bindings (preserving all M1/M2 controls + F1-F5 cameras)

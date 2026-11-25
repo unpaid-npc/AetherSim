@@ -320,6 +320,8 @@ export class ActorCriticMLP {
 
   public readonly obsStats: RunningMeanStd;
   private adamStep = 0;
+  private actorAdamStep = 0;
+  private criticAdamStep = 0;
 
   // Allocation-free scratch buffers for hot loops
   private readonly aH1: Float32Array;
@@ -512,10 +514,31 @@ export class ActorCriticMLP {
     backwardLayer(this.criticL1, obs, this.dH1Critic, null);
   }
 
-  /** Applies global L2 gradient clipping and Adam update across all actor, critic, and logStd weights. */
-  stepAdam(lr: number, maxGradNorm = 0.5, gradScale = 1.0): number {
-    let normSq = 0;
+  /** Resets Adam first/second moment accumulators across actor, critic, and logStd. */
+  resetOptimizerState(): void {
     for (const l of this.allLayers) {
+      l.mw.fill(0);
+      l.vw.fill(0);
+      l.mb.fill(0);
+      l.vb.fill(0);
+    }
+    this.mLogStd.fill(0);
+    this.vLogStd.fill(0);
+    this.adamStep = 0;
+    this.actorAdamStep = 0;
+    this.criticAdamStep = 0;
+  }
+
+  private applyAdamToLayers(
+    layers: DenseLayer[],
+    stepIndex: number,
+    lr: number,
+    maxGradNorm: number,
+    gradScale: number,
+    updateLogStd: boolean
+  ): number {
+    let normSq = 0;
+    for (const l of layers) {
       for (let i = 0; i < l.gw.length; i++) {
         l.gw[i] *= gradScale;
         normSq += l.gw[i] * l.gw[i];
@@ -525,22 +548,23 @@ export class ActorCriticMLP {
         normSq += l.gb[i] * l.gb[i];
       }
     }
-    for (let i = 0; i < this.gLogStd.length; i++) {
-      this.gLogStd[i] *= gradScale;
-      normSq += this.gLogStd[i] * this.gLogStd[i];
+    if (updateLogStd) {
+      for (let i = 0; i < this.gLogStd.length; i++) {
+        this.gLogStd[i] *= gradScale;
+        normSq += this.gLogStd[i] * this.gLogStd[i];
+      }
     }
 
     const totalNorm = Math.sqrt(normSq);
     const clipCoef = totalNorm > maxGradNorm && totalNorm > 1e-12 ? maxGradNorm / totalNorm : 1.0;
 
-    this.adamStep += 1;
     const beta1 = 0.9;
     const beta2 = 0.999;
     const eps = 1e-8;
-    const bc1 = 1 - Math.pow(beta1, this.adamStep);
-    const bc2 = 1 - Math.pow(beta2, this.adamStep);
+    const bc1 = 1 - Math.pow(beta1, stepIndex);
+    const bc2 = 1 - Math.pow(beta2, stepIndex);
 
-    for (const l of this.allLayers) {
+    for (const l of layers) {
       for (let i = 0; i < l.w.length; i++) {
         const g = l.gw[i] * clipCoef;
         l.mw[i] = beta1 * l.mw[i] + (1 - beta1) * g;
@@ -559,20 +583,54 @@ export class ActorCriticMLP {
       }
     }
 
-    for (let i = 0; i < this.logStd.length; i++) {
-      const g = this.gLogStd[i] * clipCoef;
-      this.mLogStd[i] = beta1 * this.mLogStd[i] + (1 - beta1) * g;
-      this.vLogStd[i] = beta2 * this.vLogStd[i] + (1 - beta2) * g * g;
-      const mHat = this.mLogStd[i] / bc1;
-      const vHat = this.vLogStd[i] / bc2;
-      this.logStd[i] = clamp(
-        this.logStd[i] - (lr * mHat) / (Math.sqrt(vHat) + eps),
-        LOG_STD_MIN,
-        LOG_STD_MAX
-      );
+    if (updateLogStd) {
+      for (let i = 0; i < this.logStd.length; i++) {
+        const g = this.gLogStd[i] * clipCoef;
+        this.mLogStd[i] = beta1 * this.mLogStd[i] + (1 - beta1) * g;
+        this.vLogStd[i] = beta2 * this.vLogStd[i] + (1 - beta2) * g * g;
+        const mHat = this.mLogStd[i] / bc1;
+        const vHat = this.vLogStd[i] / bc2;
+        this.logStd[i] = clamp(
+          this.logStd[i] - (lr * mHat) / (Math.sqrt(vHat) + eps),
+          LOG_STD_MIN,
+          LOG_STD_MAX
+        );
+      }
     }
 
     return totalNorm;
+  }
+
+  /** Applies global L2 gradient clipping and Adam update across all actor, critic, and logStd weights. */
+  stepAdam(lr: number, maxGradNorm = 0.5, gradScale = 1.0): number {
+    this.adamStep += 1;
+    return this.applyAdamToLayers(this.allLayers, this.adamStep, lr, maxGradNorm, gradScale, true);
+  }
+
+  /** Applies Actor-only L2 gradient clipping and Adam update (isolated from Critic magnitude). */
+  stepAdamActor(lr: number, maxGradNorm = 1.0, gradScale = 1.0): number {
+    this.actorAdamStep += 1;
+    return this.applyAdamToLayers(
+      [this.actorL1, this.actorL2, this.actorOut],
+      this.actorAdamStep,
+      lr,
+      maxGradNorm,
+      gradScale,
+      false
+    );
+  }
+
+  /** Applies Critic-only L2 gradient clipping and Adam update (isolated from Actor weights). */
+  stepAdamCritic(lr: number, maxGradNorm = 2.0, gradScale = 1.0): number {
+    this.criticAdamStep += 1;
+    return this.applyAdamToLayers(
+      [this.criticL1, this.criticL2, this.criticOut],
+      this.criticAdamStep,
+      lr,
+      maxGradNorm,
+      gradScale,
+      false
+    );
   }
 
   /** Copies all weights, logStd, and obsStats from another network or checkpoint cleanly. */

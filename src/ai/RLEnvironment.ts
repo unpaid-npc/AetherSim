@@ -287,6 +287,7 @@ export function applyRLSpawnToController(
 
     ctrl.configureRLSpawn({
       planetId,
+      padDeckY,
       missionMode: "landing",
       position: { x: 18 + dx, y: padDeckY + 200 + dAlt, z: 8 + dz },
       velocity: { x: -2.6 + dvx, y: -17.5 + dvy, z: -1.0 + dvz },
@@ -311,6 +312,7 @@ export function applyRLSpawnToController(
     const dRoll = randomizeSpawn ? prng.uniform(-4, 4) * (Math.PI / 180) : 0;
     ctrl.configureRLSpawn({
       planetId,
+      padDeckY,
       missionMode: "launch",
       position: { x: 0, y: padDeckY, z: 0 },
       velocity: { x: 0, y: 0, z: 0 },
@@ -379,8 +381,10 @@ export class RLEnvironment {
     this.config.maxSteps = missionMode === "landing" ? 700 : 500;
     if (faultConfig) {
       this.config.faultConfig = sanitizeFaultConfig(faultConfig);
-      this.controller.setFaultConfig(this.config.faultConfig);
     }
+    this.controller.reset(planetId, this.config.padDeckY, missionMode);
+    this.controller.setControlMode("ai_ppo");
+    this.controller.setFaultConfig(this.config.faultConfig);
   }
 
   reset(obsOut = new Float32Array(OBS_DIM)): FlightTelemetry {

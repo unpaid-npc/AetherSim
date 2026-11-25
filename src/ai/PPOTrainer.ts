@@ -53,6 +53,43 @@ export interface EvalBatchSummary {
   readonly meanTouchdownVy: number | null;
 }
 
+export type BrainLevel = "untrained" | "pre_trained" | "ppo_trained";
+
+export interface BestBrainSummary {
+  readonly brainLevel: BrainLevel;
+  readonly hasTrainedWeights: boolean;
+  readonly evalEpisodes: number;
+  readonly evalSuccessCount: number;
+  readonly evalSafeCount: number;
+  readonly evalSuccessRatePct: number;
+  readonly evalSafeRatePct: number;
+  readonly evalMeanReturn: number;
+  readonly evalMeanTouchdownVy: number | null;
+}
+
+export interface WarmStartResult {
+  readonly metrics: TrainingMetrics;
+  readonly evalSummary: EvalBatchSummary;
+  readonly bestBrain: BestBrainSummary;
+  readonly checkpoint: PolicyCheckpoint;
+  readonly bestCheckpoint: PolicyCheckpoint;
+  readonly statusMessage: string;
+}
+
+export function createUntrainedBestBrain(): BestBrainSummary {
+  return {
+    brainLevel: "untrained",
+    hasTrainedWeights: false,
+    evalEpisodes: 0,
+    evalSuccessCount: 0,
+    evalSafeCount: 0,
+    evalSuccessRatePct: 0,
+    evalSafeRatePct: 0,
+    evalMeanReturn: 0,
+    evalMeanTouchdownVy: null,
+  };
+}
+
 const DEFAULT_PPO_CONFIG: PPOConfig = {
   gamma: 0.99,
   gaeLambda: 0.95,
@@ -174,6 +211,11 @@ export class PPOTrainer {
   private readonly metricsHistory: TrainingMetrics[] = [];
   private lastMetrics: TrainingMetrics;
 
+  public isWarmStarted = false;
+  public brainLevel: BrainLevel = "untrained";
+  private bestCheckpoint: PolicyCheckpoint | null = null;
+  private bestBrain: BestBrainSummary = createUntrainedBestBrain();
+
   constructor(
     envConfig: RLEnvConfig,
     ppoConfig: Partial<PPOConfig> = {},
@@ -224,19 +266,25 @@ export class PPOTrainer {
     randomizeSpawn: boolean,
     faultConfig?: RLEnvConfig["faultConfig"]
   ): void {
+    const contextChanged =
+      this.env.config.planetId !== planetId || this.env.config.missionMode !== missionMode;
     this.env.setPlanetAndMission(planetId, missionMode, randomizeSpawn, faultConfig);
     this.envInitialized = false;
+    if (contextChanged) {
+      this.clearTrainingSessionStats();
+    }
   }
 
-  resetWeights(seed = this.prng.initialSeed): void {
-    this.prng = new SeededPRNG(seed);
-    this.policy = new ActorCriticMLP(this.policy.arch, seed);
+  private clearTrainingSessionStats(): void {
     this.buffer.clear();
     this.updateIndex = 0;
     this.episodesCompleted = 0;
     this.totalSteps = 0;
     this.currentEpReturn = 0;
-    this.envInitialized = false;
+    this.isWarmStarted = false;
+    this.brainLevel = "untrained";
+    this.bestCheckpoint = null;
+    this.bestBrain = createUntrainedBestBrain();
     this.recentEpisodes.length = 0;
     this.metricsHistory.length = 0;
     this.lastMetrics = {
@@ -256,6 +304,49 @@ export class PPOTrainer {
       approxKL: 0,
       clipFraction: 0,
     };
+  }
+
+  resetWeights(seed = this.prng.initialSeed): void {
+    this.prng = new SeededPRNG(seed);
+    this.policy = new ActorCriticMLP(this.policy.arch, seed);
+    this.envInitialized = false;
+    this.clearTrainingSessionStats();
+  }
+
+  private buildBestBrainFromEval(
+    evalSummary: EvalBatchSummary,
+    level: BrainLevel
+  ): BestBrainSummary {
+    const evalSuccessCount = Math.round((evalSummary.successRatePct / 100) * evalSummary.episodes);
+    const evalSafeRatePct = Math.min(
+      100,
+      evalSummary.successRatePct + evalSummary.hardLandingRatePct
+    );
+    const evalSafeCount = Math.round((evalSafeRatePct / 100) * evalSummary.episodes);
+    return {
+      brainLevel: level,
+      hasTrainedWeights: true,
+      evalEpisodes: evalSummary.episodes,
+      evalSuccessCount,
+      evalSafeCount,
+      evalSuccessRatePct: evalSummary.successRatePct,
+      evalSafeRatePct,
+      evalMeanReturn: evalSummary.meanReturn,
+      evalMeanTouchdownVy: evalSummary.meanTouchdownVy,
+    };
+  }
+
+  private isBetterBrain(candidate: BestBrainSummary, current: BestBrainSummary): boolean {
+    if (!current.hasTrainedWeights) {
+      return true;
+    }
+    if (candidate.evalSuccessRatePct !== current.evalSuccessRatePct) {
+      return candidate.evalSuccessRatePct > current.evalSuccessRatePct;
+    }
+    if (candidate.evalSafeRatePct !== current.evalSafeRatePct) {
+      return candidate.evalSafeRatePct > current.evalSafeRatePct;
+    }
+    return candidate.evalMeanReturn > current.evalMeanReturn;
   }
 
   private recordEpisodeOutcome(
@@ -323,7 +414,41 @@ export class PPOTrainer {
     const lastNormObs = this.normalizeObsIfEnabled(this.currentObs, false);
     const lastVal = lastDone ? 0 : this.policy.forwardFast(lastNormObs).value;
     const elapsedSec = Math.max(1e-4, (performance.now() - startMs) / 1000);
-    return this.runUpdateOnBuffer(lastVal, lastDone, this.config.rolloutSteps / elapsedSec);
+    const metrics = this.runUpdateOnBuffer(
+      lastVal,
+      lastDone,
+      this.config.rolloutSteps / elapsedSec
+    );
+
+    if (this.brainLevel === "untrained") {
+      this.brainLevel = "ppo_trained";
+    }
+
+    // Periodic deterministic validation + best-brain guard + collapse recovery
+    if (this.updateIndex === 1 || this.updateIndex % 4 === 0) {
+      const evalSummary = this.evaluateBatch(5, true, 9001);
+      const candidate = this.buildBestBrainFromEval(
+        evalSummary,
+        this.isWarmStarted && this.updateIndex === 0 ? "pre_trained" : "ppo_trained"
+      );
+      if (this.isBetterBrain(candidate, this.bestBrain)) {
+        this.bestBrain = candidate;
+        this.bestCheckpoint = this.exportCheckpoint();
+        this.brainLevel = candidate.brainLevel;
+      } else if (
+        this.isWarmStarted &&
+        this.bestCheckpoint &&
+        (candidate.evalSafeRatePct < this.bestBrain.evalSafeRatePct - 40 ||
+          candidate.evalMeanReturn < this.bestBrain.evalMeanReturn - 140)
+      ) {
+        const { network } = ActorCriticMLP.deserialize(this.bestCheckpoint);
+        this.policy.copyWeightsFrom(network);
+        this.policy.resetOptimizerState();
+        this.policy.logStd.fill(-1.75);
+      }
+    }
+
+    return metrics;
   }
 
   /**
@@ -390,6 +515,16 @@ export class PPOTrainer {
     let sumClipFrac = 0;
     let totalMinibatches = 0;
     let earlyStop = false;
+
+    const effectiveLr = this.isWarmStarted
+      ? Math.min(this.config.learningRate, 1.5e-4)
+      : this.config.learningRate;
+    const effectiveTargetKL = this.isWarmStarted
+      ? Math.min(this.config.targetKL, 0.012)
+      : this.config.targetKL;
+    const effectiveEntropyCoef = this.isWarmStarted
+      ? Math.min(this.config.entropyCoef, 0.002)
+      : this.config.entropyCoef;
 
     const batchSize = Math.min(this.config.miniBatchSize, N);
 
@@ -484,7 +619,7 @@ export class PPOTrainer {
             dMean[d] = dLossDLogProb * (diff * invVar);
             dLogStd[d] =
               dLossDLogProb * (diff * diff * invVar - 1.0) -
-              this.config.entropyCoef * 1.0;
+              effectiveEntropyCoef * 1.0;
           }
 
           // Value loss: 0.5 * c1 * (value - ret)^2
@@ -505,12 +640,19 @@ export class PPOTrainer {
         totalMinibatches += 1;
 
         this.policy.stepAdam(
-          this.config.learningRate,
+          effectiveLr,
           this.config.maxGradNorm,
           1.0 / mbCount
         );
+        if (this.isWarmStarted) {
+          for (let d = 0; d < ACTION_DIM; d++) {
+            if (this.policy.logStd[d] > -1.1) {
+              this.policy.logStd[d] = -1.1;
+            }
+          }
+        }
 
-        if (this.config.targetKL > 0 && avgKL > 1.5 * this.config.targetKL) {
+        if (effectiveTargetKL > 0 && avgKL > 1.5 * effectiveTargetKL) {
           earlyStop = true;
           break;
         }
@@ -566,23 +708,45 @@ export class PPOTrainer {
   }
 
   /**
-   * Optional Behavioral Cloning warm-start: collects classical guidance rollouts and supervises
-   * the actor/critic before PPO fine-tuning. Never invoked unless explicitly requested by user.
+   * High-accuracy Actor-isolated Behavioral Cloning + 1-round DAgger warm-start from classical guidance.
+   * Decouples Actor and Critic Adam steps so Critic return scales never crush Actor imitation gradients,
+   * lowers exploration noise to fine-tuning range (logStd = -1.6), evaluates 5 deterministic trials,
+   * and saves the resulting policy as the protected `bestBrain`.
    */
-  warmStartFromGuidance(episodes = 10, epochs = 8): TrainingMetrics {
+  warmStartWithSummary(episodes = 12, epochs = 14): WarmStartResult {
     const samplesObs: Float32Array[] = [];
     const samplesAct: Float32Array[] = [];
     const samplesRet: number[] = [];
+    const samplesWeight: number[] = [];
 
     const evalEnv = new RLEnvironment(this.env.config, this.prng.initialSeed + 777);
     const obsBuf = new Float32Array(OBS_DIM);
     const nextBuf = new Float32Array(OBS_DIM);
+    const baseRandomize = this.env.config.randomizeSpawn;
+
+    const pushTrajectory = (
+      epObs: Float32Array[],
+      epAct: Float32Array[],
+      epRew: number[],
+      epWeights: number[]
+    ) => {
+      let ret = 0;
+      for (let t = epObs.length - 1; t >= 0; t--) {
+        ret = epRew[t] + this.config.gamma * ret;
+        samplesObs.push(epObs[t]);
+        samplesAct.push(epAct[t]);
+        samplesRet.push(ret);
+        samplesWeight.push(epWeights[t]);
+      }
+    };
 
     for (let ep = 0; ep < episodes; ep++) {
+      evalEnv.config.randomizeSpawn = ep < 2 ? false : baseRandomize;
       evalEnv.reset(obsBuf);
       const epObs: Float32Array[] = [];
       const epAct: Float32Array[] = [];
       const epRew: number[] = [];
+      const epWeights: number[] = [];
 
       for (let t = 0; t < evalEnv.config.maxSteps; t++) {
         const guidance = evalEnv.controller.computeClassicalGuidanceAction();
@@ -591,8 +755,12 @@ export class PPOTrainer {
           clamp(guidance.pitchCmd, -1, 1),
           clamp(guidance.yawCmd, -1, 1),
         ]);
-        epObs.push(new Float32Array(obsBuf));
+        const lowAltWeight =
+          this.env.config.missionMode === "landing" && obsBuf[1] < 0.08 ? 2.0 : 1.0;
+        const modelObs = this.normalizeObsIfEnabled(obsBuf, true, new Float32Array(OBS_DIM));
+        epObs.push(modelObs);
         epAct.push(rawAct);
+        epWeights.push(lowAltWeight);
         const res = evalEnv.step(rawAct, nextBuf);
         epRew.push(res.reward);
         obsBuf.set(nextBuf);
@@ -600,47 +768,162 @@ export class PPOTrainer {
           break;
         }
       }
-
-      let ret = 0;
-      for (let t = epObs.length - 1; t >= 0; t--) {
-        ret = epRew[t] + this.config.gamma * ret;
-        samplesObs.push(epObs[t]);
-        samplesAct.push(epAct[t]);
-        samplesRet.push(ret);
-      }
+      pushTrajectory(epObs, epAct, epRew, epWeights);
     }
 
-    const N = samplesObs.length;
-    if (N > 0) {
-      const idx = new Int32Array(N);
-      for (let i = 0; i < N; i++) {
-        idx[i] = i;
-      }
+    const trainActorEpochs = (numEpochs: number, lr: number) => {
+      const nSamples = samplesObs.length;
+      if (nSamples === 0) return;
+      const idx = new Int32Array(nSamples);
+      for (let i = 0; i < nSamples; i++) idx[i] = i;
       const dMean = new Float32Array(ACTION_DIM);
       const zeroLogStd = new Float32Array(ACTION_DIM);
       const mbSize = 64;
 
-      for (let e = 0; e < epochs; e++) {
-        this.prng.shuffleInPlace(idx, N);
-        for (let s = 0; s < N; s += mbSize) {
-          const end = Math.min(N, s + mbSize);
+      for (let e = 0; e < numEpochs; e++) {
+        this.prng.shuffleInPlace(idx, nSamples);
+        for (let s = 0; s < nSamples; s += mbSize) {
+          const end = Math.min(nSamples, s + mbSize);
           const count = end - s;
           this.policy.zeroGrad();
           for (let k = s; k < end; k++) {
             const j = idx[k];
-            const { mean, value } = this.policy.forwardFast(samplesObs[j]);
+            const w = samplesWeight[j];
+            const { mean } = this.policy.forwardFast(samplesObs[j]);
             for (let a = 0; a < ACTION_DIM; a++) {
-              dMean[a] = mean[a] - samplesAct[j][a];
+              dMean[a] = w * (mean[a] - samplesAct[j][a]);
             }
             this.policy.accumulateActorBackward(samplesObs[j], dMean, zeroLogStd);
-            this.policy.accumulateCriticBackward(samplesObs[j], 0.25 * (value - samplesRet[j]));
           }
-          this.policy.stepAdam(Math.max(this.config.learningRate, 1e-3), 0.5, 1 / count);
+          this.policy.stepAdamActor(lr, 1.0, 1 / count);
+        }
+      }
+    };
+
+    // Phase A: Actor-only supervised Behavioral Cloning
+    trainActorEpochs(epochs, 3.5e-3);
+
+    // Phase B: 1-round DAgger pass collecting expert guidance on states visited by Actor
+    const daggerEpisodes = 3;
+    for (let ep = 0; ep < daggerEpisodes; ep++) {
+      evalEnv.config.randomizeSpawn = ep === 0 ? false : baseRandomize;
+      evalEnv.reset(obsBuf);
+      const epObs: Float32Array[] = [];
+      const epAct: Float32Array[] = [];
+      const epRew: number[] = [];
+      const epWeights: number[] = [];
+
+      for (let t = 0; t < evalEnv.config.maxSteps; t++) {
+        const modelObs = this.normalizeObsIfEnabled(obsBuf, false, new Float32Array(OBS_DIM));
+        const { mean } = this.policy.forwardFast(modelObs);
+        const actorAct = new Float32Array(mean);
+        const guidance = evalEnv.controller.computeClassicalGuidanceAction();
+        const expertAct = new Float32Array([
+          clamp(guidance.throttle * 2 - 1, -1, 1),
+          clamp(guidance.pitchCmd, -1, 1),
+          clamp(guidance.yawCmd, -1, 1),
+        ]);
+        const lowAltWeight =
+          this.env.config.missionMode === "landing" && obsBuf[1] < 0.08 ? 2.0 : 1.0;
+
+        epObs.push(modelObs);
+        epAct.push(expertAct);
+        epWeights.push(lowAltWeight);
+
+        const res = evalEnv.step(actorAct, nextBuf);
+        epRew.push(res.reward);
+        obsBuf.set(nextBuf);
+        if (res.done) {
+          break;
+        }
+      }
+      pushTrajectory(epObs, epAct, epRew, epWeights);
+    }
+
+    // Fine-tune Actor on combined BC + DAgger dataset
+    trainActorEpochs(8, 1.8e-3);
+
+    // Phase C: Critic-only supervised fit (isolated from Actor weights)
+    const nTotal = samplesObs.length;
+    if (nTotal > 0) {
+      const idx = new Int32Array(nTotal);
+      for (let i = 0; i < nTotal; i++) idx[i] = i;
+      const mbSize = 64;
+      for (let e = 0; e < 6; e++) {
+        this.prng.shuffleInPlace(idx, nTotal);
+        for (let s = 0; s < nTotal; s += mbSize) {
+          const end = Math.min(nTotal, s + mbSize);
+          const count = end - s;
+          this.policy.zeroGrad();
+          for (let k = s; k < end; k++) {
+            const j = idx[k];
+            const { value } = this.policy.forwardFast(samplesObs[j]);
+            const dVal = clamp(value - samplesRet[j], -40, 40) * 0.1;
+            this.policy.accumulateCriticBackward(samplesObs[j], dVal);
+          }
+          this.policy.stepAdamCritic(2e-3, 2.0, 1 / count);
         }
       }
     }
 
-    return this.lastMetrics;
+    evalEnv.config.randomizeSpawn = baseRandomize;
+    this.policy.logStd.fill(-1.6);
+    this.policy.resetOptimizerState();
+    this.isWarmStarted = true;
+    this.brainLevel = "pre_trained";
+    this.buffer.clear();
+    this.envInitialized = false;
+
+    const evalSummary = this.evaluateBatch(5, true, 9001);
+    const candidateBest = this.buildBestBrainFromEval(evalSummary, "pre_trained");
+    this.bestBrain = candidateBest;
+    const currentCheckpoint = this.exportCheckpoint();
+    this.bestCheckpoint = currentCheckpoint;
+
+    this.episodesCompleted += episodes + daggerEpisodes;
+    this.lastMetrics = {
+      ...this.lastMetrics,
+      episodesCompleted: this.episodesCompleted,
+      totalSteps: this.totalSteps,
+      stepsPerSec: 0,
+      lastEpisodeReturn: evalSummary.meanReturn,
+      rollingMeanReturn: evalSummary.meanReturn,
+      landingSuccessRatePct: evalSummary.successRatePct,
+      crashRatePct: evalSummary.crashRatePct,
+      meanTouchdownVy: evalSummary.meanTouchdownVy,
+    };
+    this.metricsHistory.push(this.lastMetrics);
+
+    const planetLabel =
+      this.env.config.planetId.charAt(0).toUpperCase() + this.env.config.planetId.slice(1);
+    let statusMessage: string;
+    if (this.env.config.missionMode === "landing") {
+      if (candidateBest.evalSuccessCount === evalSummary.episodes) {
+        statusMessage = `Pre-train complete: 100% (${evalSummary.episodes}/${evalSummary.episodes}) nominal landing success on ${planetLabel}. Click 3. FLY TRAINED AI!`;
+      } else if (candidateBest.evalSafeCount > 0) {
+        statusMessage = `Pre-train complete: ${candidateBest.evalSafeRatePct.toFixed(0)}% (${candidateBest.evalSafeCount}/${evalSummary.episodes}) safe landings (${candidateBest.evalSuccessRatePct.toFixed(0)}% nominal) on ${planetLabel}. Click 3. FLY TRAINED AI!`;
+      } else {
+        statusMessage = `Pre-train finished on ${planetLabel} (${evalSummary.crashRatePct.toFixed(0)}% crash). Try 2. FAST TRAIN (PPO) to refine.`;
+      }
+    } else {
+      statusMessage = `Pre-train complete: ${candidateBest.evalSuccessRatePct.toFixed(0)}% (${candidateBest.evalSuccessCount}/${evalSummary.episodes}) launch success on ${planetLabel}.`;
+    }
+
+    return {
+      metrics: this.lastMetrics,
+      evalSummary,
+      bestBrain: this.bestBrain,
+      checkpoint: currentCheckpoint,
+      bestCheckpoint: currentCheckpoint,
+      statusMessage,
+    };
+  }
+
+  /**
+   * Optional Behavioral Cloning warm-start wrapper returning updated TrainingMetrics.
+   */
+  warmStartFromGuidance(episodes = 12, epochs = 14): TrainingMetrics {
+    return this.warmStartWithSummary(episodes, epochs).metrics;
   }
 
   /** Evaluates the current policy over N deterministic (or stochastic) episodes. */
@@ -709,6 +992,10 @@ export class PPOTrainer {
     return this.metricsHistory;
   }
 
+  getBestBrain(): BestBrainSummary {
+    return this.bestBrain;
+  }
+
   exportCheckpoint(): PolicyCheckpoint {
     return this.policy.serialize({
       planet: this.env.config.planetId,
@@ -719,13 +1006,30 @@ export class PPOTrainer {
     });
   }
 
-  loadCheckpoint(payload: PolicyCheckpoint | string): PolicyCheckpoint {
+  exportBestCheckpoint(): PolicyCheckpoint {
+    return this.bestCheckpoint ?? this.exportCheckpoint();
+  }
+
+  loadCheckpoint(
+    payload: PolicyCheckpoint | string,
+    bestBrainOverride?: BestBrainSummary
+  ): PolicyCheckpoint {
     const { network, checkpoint } = ActorCriticMLP.deserialize(payload);
     this.policy = network;
     this.totalSteps = checkpoint.totalSteps ?? 0;
     this.episodesCompleted = checkpoint.episodesCompleted ?? 0;
     this.buffer.clear();
     this.envInitialized = false;
+    if (bestBrainOverride) {
+      this.bestBrain = bestBrainOverride;
+      this.brainLevel = bestBrainOverride.brainLevel;
+      this.isWarmStarted = bestBrainOverride.brainLevel !== "untrained";
+      this.bestCheckpoint = checkpoint;
+    } else if (this.totalSteps > 0 || this.episodesCompleted > 0) {
+      if (this.brainLevel === "untrained") {
+        this.brainLevel = "ppo_trained";
+      }
+    }
     return checkpoint;
   }
 }

@@ -3,7 +3,13 @@ import type {
   ActivationSnapshot,
   PolicyCheckpoint,
 } from "../ai/NeuralNetwork";
-import { PPOTrainer, type TrainingMetrics } from "../ai/PPOTrainer";
+import {
+  type BestBrainSummary,
+  type BrainLevel,
+  PPOTrainer,
+  type TrainingMetrics,
+  createUntrainedBestBrain,
+} from "../ai/PPOTrainer";
 import { PPOWorkerClient } from "../ai/PPOWorkerClient";
 import { SeededPRNG } from "../ai/prng";
 import {
@@ -50,10 +56,13 @@ import { StarshipVehicle } from "./StarshipVehicle";
 import { TerrainSystem } from "./TerrainSystem";
 
 export type { CameraFocusMode, CameraPreset } from "./CameraDirector";
-export type AITrainingMode = "idle" | "live_train" | "turbo_train" | "eval";
+export type AITrainingMode = "idle" | "pre_training" | "live_train" | "turbo_train" | "eval";
 
 export interface AIStatusSnapshot {
   mode: AITrainingMode;
+  brainLevel: BrainLevel;
+  bestBrain: BestBrainSummary;
+  statusMessage: string;
   learningRate: number;
   randomizeSpawn: boolean;
   metrics: TrainingMetrics;
@@ -144,6 +153,10 @@ export class SceneManager {
   private aiLastOutputs = { throttle: 0, pitchCmd: 0, yawCmd: 0, value: 0 };
   private aiMetrics: TrainingMetrics;
   private aiHistory: TrainingMetrics[] = [];
+  private bestCheckpoint: PolicyCheckpoint | null = null;
+  private bestBrain: BestBrainSummary = createUntrainedBestBrain();
+  private aiStatusMessage =
+    "Untrained random brain. Click 1. PRE-TRAIN BRAIN or 2. FAST TRAIN.";
 
   private faultConfig: FaultConfig = createDefaultFaultConfig();
   private readonly flightLog: FlightLogSample[] = [];
@@ -186,7 +199,7 @@ export class SceneManager {
     this.liveTrainer = new PPOTrainer(
       {
         planetId: initialPlanetId,
-        missionMode: "landing",
+        missionMode: "launch",
         randomizeSpawn: this.aiRandomizeSpawn,
         faultConfig: this.faultConfig,
       },
@@ -196,27 +209,71 @@ export class SceneManager {
     this.aiMetrics = this.liveTrainer.getLastMetrics();
 
     this.workerClient = new PPOWorkerClient({
-      onProgress: (metrics, checkpoint, historyTail, running) => {
-        this.liveTrainer.loadCheckpoint(checkpoint);
+      onWarmStartComplete: ({
+        metrics,
+        bestBrain,
+        bestCheckpoint,
+        statusMessage,
+      }) => {
+        this.liveTrainer.loadCheckpoint(bestCheckpoint, bestBrain);
+        this.bestCheckpoint = bestCheckpoint;
+        this.bestBrain = bestBrain;
+        this.aiMetrics = { ...metrics, stepsPerSec: 0 };
+        this.aiHistory = [...this.liveTrainer.getHistory(), this.aiMetrics].slice(-60);
+        this.aiMode = "idle";
+        this.aiStatusMessage = statusMessage;
+        this.aiLastError = null;
+        this.emitTelemetryNow();
+      },
+      onProgress: (
+        metrics,
+        checkpoint,
+        historyTail,
+        running,
+        bestBrain,
+        bestCheckpoint
+      ) => {
+        this.liveTrainer.loadCheckpoint(
+          checkpoint,
+          bestBrain.hasTrainedWeights ? bestBrain : undefined
+        );
+        this.bestCheckpoint = bestBrain.hasTrainedWeights ? bestCheckpoint : null;
+        this.bestBrain = bestBrain;
         this.aiMetrics = metrics;
         this.aiHistory = historyTail;
         this.aiLastError = null;
         if (!running && this.aiMode === "turbo_train") {
           this.aiMode = "idle";
         }
+        this.aiStatusMessage = bestBrain.hasTrainedWeights
+          ? `PPO Ep ${metrics.episodesCompleted} · Best: ${bestBrain.evalSuccessCount}/${bestBrain.evalEpisodes} nom (${bestBrain.evalSafeRatePct.toFixed(0)}% safe)`
+          : `Training Ep ${metrics.episodesCompleted} · Mean Return ${metrics.rollingMeanReturn.toFixed(1)}`;
         this.emitTelemetryNow();
       },
-      onPaused: (metrics, checkpoint) => {
-        this.liveTrainer.loadCheckpoint(checkpoint);
-        this.aiMetrics = metrics;
+      onPaused: (metrics, _checkpoint, bestBrain, bestCheckpoint) => {
+        this.bestCheckpoint = bestBrain.hasTrainedWeights ? bestCheckpoint : null;
+        this.bestBrain = bestBrain;
+        this.liveTrainer.loadCheckpoint(
+          bestCheckpoint,
+          bestBrain.hasTrainedWeights ? bestBrain : undefined
+        );
+        this.aiMetrics = { ...metrics, stepsPerSec: 0 };
         if (this.aiMode === "turbo_train") {
           this.aiMode = "idle";
         }
+        this.aiStatusMessage = bestBrain.hasTrainedWeights
+          ? `Paused — Best brain (${bestBrain.evalSuccessRatePct.toFixed(0)}% nominal, ${bestBrain.evalSafeRatePct.toFixed(0)}% safe) ready.`
+          : "Training paused.";
         this.emitTelemetryNow();
       },
-      onReady: (metrics, checkpoint) => {
-        this.liveTrainer.loadCheckpoint(checkpoint);
-        this.aiMetrics = metrics;
+      onReady: (metrics, checkpoint, bestBrain, bestCheckpoint) => {
+        this.bestCheckpoint = bestBrain.hasTrainedWeights ? bestCheckpoint : null;
+        this.bestBrain = bestBrain;
+        this.liveTrainer.loadCheckpoint(
+          checkpoint,
+          bestBrain.hasTrainedWeights ? bestBrain : undefined
+        );
+        this.aiMetrics = { ...metrics, stepsPerSec: 0 };
         this.emitTelemetryNow();
       },
       onMonteCarloResult: (summary) => {
@@ -228,6 +285,7 @@ export class SceneManager {
         this.monteCarloRunning = false;
         this.aiLastError = message;
         this.aiMode = "idle";
+        this.aiStatusMessage = `Worker error: ${message}`;
         this.emitTelemetryNow();
       },
     });
@@ -490,6 +548,32 @@ export class SceneManager {
     return this.quality;
   }
 
+  private resetAIContext(planetId: PlanetId, missionMode: MissionMode): void {
+    this.workerClient.bumpSession();
+    this.liveEpActive = false;
+    this.aiMode = "idle";
+    this.liveTrainer.setEnvConfig(
+      planetId,
+      missionMode,
+      this.aiRandomizeSpawn,
+      this.faultConfig
+    );
+    this.bestCheckpoint = null;
+    this.bestBrain = createUntrainedBestBrain();
+    this.aiMetrics = { ...this.liveTrainer.getLastMetrics(), stepsPerSec: 0 };
+    this.aiHistory = [];
+    this.aiLastError = null;
+    const pName = getPlanetConfig(planetId).name;
+    this.aiStatusMessage = `Switched to ${pName} ${missionMode.toUpperCase()} — click 1. PRE-TRAIN BRAIN or 2. FAST TRAIN.`;
+    this.workerClient.init(
+      planetId,
+      missionMode,
+      this.aiRandomizeSpawn,
+      this.aiLearningRate,
+      this.faultConfig
+    );
+  }
+
   setPlanet(id: PlanetId): PlanetConfig {
     if (this.currentPlanet.id === id) {
       return this.currentPlanet;
@@ -505,38 +589,19 @@ export class SceneManager {
     this.applyPlanetEnvironment(next);
 
     const mission = this.flightController.getTelemetry().missionMode;
-    this.liveTrainer.setEnvConfig(id, mission, this.aiRandomizeSpawn, this.faultConfig);
-    if (this.aiMode === "turbo_train") {
-      this.workerClient.startTurboTrain(
-        id,
-        mission,
-        this.aiRandomizeSpawn,
-        this.aiLearningRate,
-        this.faultConfig
-      );
-    }
-
+    this.resetAIContext(id, mission);
+    this.flightController.reset(id, this.launchComplex.getPadDeckY(), mission);
     this.resetMission();
     return next;
   }
 
   setMissionMode(mode: MissionMode): void {
-    this.flightController.setMissionMode(mode);
-    this.liveTrainer.setEnvConfig(
+    this.resetAIContext(this.currentPlanet.id, mode);
+    this.flightController.reset(
       this.currentPlanet.id,
-      mode,
-      this.aiRandomizeSpawn,
-      this.faultConfig
+      this.launchComplex.getPadDeckY(),
+      mode
     );
-    if (this.aiMode === "turbo_train") {
-      this.workerClient.startTurboTrain(
-        this.currentPlanet.id,
-        mode,
-        this.aiRandomizeSpawn,
-        this.aiLearningRate,
-        this.faultConfig
-      );
-    }
     this.flightLog.length = 0;
     this.resetVehicleToFlightState();
     this.cameraDirector.reLockOnVehicle(
@@ -548,9 +613,17 @@ export class SceneManager {
 
   setControlMode(mode: ControlMode): void {
     this.flightController.setControlMode(mode);
-    if (mode === "ai_ppo" && this.aiMode === "idle") {
-      this.aiMode = "eval";
-    } else if (mode !== "ai_ppo" && (this.aiMode === "live_train" || this.aiMode === "eval")) {
+    if (mode === "ai_ppo") {
+      if (this.bestCheckpoint) {
+        this.liveTrainer.loadCheckpoint(this.bestCheckpoint, this.bestBrain);
+      }
+      if (this.aiMode === "idle") {
+        this.aiMode = "eval";
+        this.aiStatusMessage = this.bestBrain.hasTrainedWeights
+          ? `AI Pilot active — loaded best saved brain (${this.bestBrain.evalSuccessRatePct.toFixed(0)}% nominal).`
+          : "AI Pilot active — untrained random weights (expect crash).";
+      }
+    } else if (this.aiMode === "live_train" || this.aiMode === "eval") {
       this.aiMode = "idle";
       this.liveEpActive = false;
     }
@@ -653,20 +726,37 @@ export class SceneManager {
     return this.flightLog;
   }
 
-  // --- Milestone 2/3: Neural AI (PPO) Controls ---
+  // --- Milestone 2/3/Hotfix: Neural AI (PPO) Controls ---
 
   startLiveTrain(): void {
+    if (this.aiMode === "live_train") {
+      this.pauseAI();
+      return;
+    }
+    this.workerClient.bumpSession();
     this.workerClient.pause();
     this.aiLastError = null;
     this.aiMode = "live_train";
+    this.aiStatusMessage = "Watching AI explore, crash & learn live in 3D...";
     this.flightController.setControlMode("ai_ppo");
     this.spawnLive3DRLEpisode();
+    this.emitTelemetryNow();
+  }
+
+  toggleTurboTrain(): void {
+    if (this.aiMode === "turbo_train") {
+      this.pauseAI();
+      return;
+    }
+    this.startTurboTrain();
   }
 
   startTurboTrain(): void {
+    this.workerClient.bumpSession();
     this.aiLastError = null;
     this.liveEpActive = false;
     this.aiMode = "turbo_train";
+    this.aiStatusMessage = "Training PPO in background Web Worker...";
     const mission = this.flightController.getTelemetry().missionMode;
     this.workerClient.syncWeights(this.liveTrainer.exportCheckpoint());
     this.workerClient.startTurboTrain(
@@ -676,51 +766,78 @@ export class SceneManager {
       this.aiLearningRate,
       this.faultConfig
     );
+    this.emitTelemetryNow();
   }
 
   pauseAI(): void {
-    if (this.aiMode === "turbo_train") {
+    if (this.aiMode === "turbo_train" || this.aiMode === "pre_training") {
+      this.workerClient.bumpSession();
       this.workerClient.pause();
     }
     this.aiMode = "idle";
     this.liveEpActive = false;
+    this.aiMetrics = { ...this.aiMetrics, stepsPerSec: 0 };
+    this.aiStatusMessage = this.bestBrain.hasTrainedWeights
+      ? `Idle — Best saved brain (${this.bestBrain.evalSuccessRatePct.toFixed(0)}% nominal, ${this.bestBrain.evalSafeRatePct.toFixed(0)}% safe).`
+      : "Idle — untrained random weights.";
+    this.emitTelemetryNow();
   }
 
   startAIEval(): void {
-    if (this.aiMode === "turbo_train") {
+    if (this.aiMode === "turbo_train" || this.aiMode === "pre_training") {
+      this.workerClient.bumpSession();
       this.workerClient.pause();
+    }
+    if (this.bestCheckpoint) {
+      this.liveTrainer.loadCheckpoint(this.bestCheckpoint, this.bestBrain);
     }
     this.aiLastError = null;
     this.aiMode = "eval";
+    this.aiMetrics = { ...this.aiMetrics, stepsPerSec: 0 };
+    this.aiStatusMessage = this.bestBrain.hasTrainedWeights
+      ? `Flying best saved brain deterministically (${this.bestBrain.evalSuccessCount}/${this.bestBrain.evalEpisodes} nom, ${this.bestBrain.evalSafeRatePct.toFixed(0)}% safe).`
+      : "Flying untrained random weights (expect crash — run 1. PRE-TRAIN BRAIN first).";
     this.flightController.setControlMode("ai_ppo");
     this.spawnLive3DRLEpisode();
+    this.emitTelemetryNow();
   }
 
-  runWarmStartAndPPO(): void {
+  startPreTrain(): void {
+    this.workerClient.bumpSession();
+    this.liveEpActive = false;
     this.aiLastError = null;
+    this.aiMode = "pre_training";
     const mission = this.flightController.getTelemetry().missionMode;
-    this.liveTrainer.setEnvConfig(
+    this.aiMetrics = { ...this.aiMetrics, stepsPerSec: 0 };
+    this.aiStatusMessage = `Pre-training brain on ${this.currentPlanet.name} ${mission.toUpperCase()} guidance demos...`;
+    this.emitTelemetryNow();
+    this.workerClient.warmStart(
       this.currentPlanet.id,
       mission,
       this.aiRandomizeSpawn,
-      this.faultConfig
+      this.aiLearningRate,
+      this.faultConfig,
+      12,
+      14
     );
-    this.liveTrainer.warmStartFromGuidance(12, 8);
-    this.aiMetrics = this.liveTrainer.getLastMetrics();
-    this.workerClient.syncWeights(this.liveTrainer.exportCheckpoint());
-    this.startTurboTrain();
+  }
+
+  runWarmStartAndPPO(): void {
+    this.startPreTrain();
   }
 
   resetAIWeights(): void {
+    this.workerClient.bumpSession();
     this.aiLastError = null;
     this.liveEpActive = false;
     this.liveTrainer.resetWeights(42);
-    this.aiMetrics = this.liveTrainer.getLastMetrics();
+    this.bestCheckpoint = null;
+    this.bestBrain = createUntrainedBestBrain();
+    this.aiMetrics = { ...this.liveTrainer.getLastMetrics(), stepsPerSec: 0 };
     this.aiHistory = [];
+    this.aiMode = "idle";
+    this.aiStatusMessage = "AI brain wiped to random untrained weights.";
     this.workerClient.resetWeights(42);
-    if (this.aiMode === "turbo_train") {
-      this.aiMode = "idle";
-    }
     this.emitTelemetryNow();
   }
 
@@ -747,17 +864,35 @@ export class SceneManager {
   }
 
   exportPolicyCheckpoint(): PolicyCheckpoint {
-    return this.liveTrainer.exportCheckpoint();
+    return this.bestCheckpoint ?? this.liveTrainer.exportCheckpoint();
   }
 
   importPolicyCheckpoint(json: string): void {
     try {
       const cp = this.liveTrainer.loadCheckpoint(json);
+      const evalSummary = this.liveTrainer.evaluateBatch(5, true, 9001);
+      const safePct = Math.min(100, evalSummary.successRatePct + evalSummary.hardLandingRatePct);
+      const importedBrain: BestBrainSummary = {
+        brainLevel: "ppo_trained",
+        hasTrainedWeights: true,
+        evalEpisodes: evalSummary.episodes,
+        evalSuccessCount: Math.round((evalSummary.successRatePct / 100) * evalSummary.episodes),
+        evalSafeCount: Math.round((safePct / 100) * evalSummary.episodes),
+        evalSuccessRatePct: evalSummary.successRatePct,
+        evalSafeRatePct: safePct,
+        evalMeanReturn: evalSummary.meanReturn,
+        evalMeanTouchdownVy: evalSummary.meanTouchdownVy,
+      };
+      this.bestCheckpoint = cp;
+      this.bestBrain = importedBrain;
+      this.liveTrainer.loadCheckpoint(cp, importedBrain);
       this.aiLastError = null;
+      this.aiStatusMessage = `Loaded checkpoint (${importedBrain.evalSuccessRatePct.toFixed(0)}% nominal, ${importedBrain.evalSafeRatePct.toFixed(0)}% safe).`;
       this.aiMetrics = {
         ...this.liveTrainer.getLastMetrics(),
         totalSteps: cp.totalSteps,
         episodesCompleted: cp.episodesCompleted,
+        stepsPerSec: 0,
       };
       this.workerClient.loadCheckpoint(cp);
       this.emitTelemetryNow();
@@ -768,11 +903,21 @@ export class SceneManager {
   }
 
   getAIStatus(): AIStatusSnapshot {
+    const isActivelyTraining =
+      this.aiMode === "turbo_train" || this.aiMode === "live_train";
     return {
       mode: this.aiMode,
+      brainLevel: this.bestBrain.hasTrainedWeights
+        ? this.bestBrain.brainLevel
+        : this.liveTrainer.brainLevel,
+      bestBrain: this.bestBrain,
+      statusMessage: this.aiStatusMessage,
       learningRate: this.aiLearningRate,
       randomizeSpawn: this.aiRandomizeSpawn,
-      metrics: this.aiMetrics,
+      metrics: {
+        ...this.aiMetrics,
+        stepsPerSec: isActivelyTraining ? this.aiMetrics.stepsPerSec : 0,
+      },
       outputs: { ...this.aiLastOutputs },
       lastError: this.aiLastError,
     };
@@ -792,13 +937,18 @@ export class SceneManager {
 
   private spawnLive3DRLEpisode(): void {
     const mission = this.flightController.getTelemetry().missionMode;
+    this.flightController.reset(
+      this.currentPlanet.id,
+      this.launchComplex.getPadDeckY(),
+      mission
+    );
     this.flightController.setControlMode("ai_ppo");
     this.flightController.setFaultConfig(this.faultConfig);
     applyRLSpawnToController(
       this.flightController,
       this.currentPlanet.id,
       mission,
-      this.aiRandomizeSpawn,
+      this.aiMode === "live_train" ? this.aiRandomizeSpawn : false,
       this.aiPrng
     );
     this.flightLog.length = 0;
@@ -910,7 +1060,7 @@ export class SceneManager {
       nextTel.phase === "COMPLETE" ||
       launchSuccess ||
       launchSidewaysFail;
-    const maxSteps = nextTel.missionMode === "landing" ? 400 : 500;
+    const maxSteps = nextTel.missionMode === "landing" ? 700 : 500;
     const timedOut = this.liveEpSteps >= maxSteps;
 
     if (terminalPhase || outOfBounds || timedOut) {

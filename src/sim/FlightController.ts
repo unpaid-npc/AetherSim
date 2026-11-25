@@ -22,6 +22,7 @@ export interface AIActionInput {
 
 export interface RLSpawnOverrides {
   planetId?: PlanetId;
+  padDeckY?: number;
   missionMode?: MissionMode;
   position?: { x: number; y: number; z: number };
   velocity?: { x: number; y: number; z: number };
@@ -490,8 +491,9 @@ export class FlightController {
   /** Configures deterministic or domain-randomized initial spawn state for RL episodes. */
   configureRLSpawn(overrides: RLSpawnOverrides): void {
     const planetId = overrides.planetId ?? this.planet.id;
+    const padDeckY = overrides.padDeckY ?? this.padDeckY;
     const mode = overrides.missionMode ?? this.missionMode;
-    this.reset(planetId, this.padDeckY, mode);
+    this.reset(planetId, padDeckY, mode);
 
     if (overrides.position) {
       this.pos = { ...overrides.position };
