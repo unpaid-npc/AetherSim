@@ -7,7 +7,12 @@ import {
 import type { FaultConfig } from "../sim/FaultInjector";
 import type { MissionMode } from "../sim/FlightController";
 import type { PolicyCheckpoint } from "./NeuralNetwork";
-import { type EvalBatchSummary, PPOTrainer, type TrainingMetrics } from "./PPOTrainer";
+import {
+  type BestBrainSummary,
+  type EvalBatchSummary,
+  PPOTrainer,
+  type TrainingMetrics,
+} from "./PPOTrainer";
 import type { WorkerInboundMessage, WorkerOutboundMessage } from "./ppoWorker";
 
 export interface PPOWorkerCallbacks {
@@ -15,10 +20,30 @@ export interface PPOWorkerCallbacks {
     metrics: TrainingMetrics,
     checkpoint: PolicyCheckpoint,
     historyTail: TrainingMetrics[],
-    running: boolean
+    running: boolean,
+    bestBrain: BestBrainSummary,
+    bestCheckpoint: PolicyCheckpoint
   ) => void;
-  onPaused?: (metrics: TrainingMetrics, checkpoint: PolicyCheckpoint) => void;
-  onReady?: (metrics: TrainingMetrics, checkpoint: PolicyCheckpoint) => void;
+  onWarmStartComplete?: (payload: {
+    metrics: TrainingMetrics;
+    evalSummary: EvalBatchSummary;
+    bestBrain: BestBrainSummary;
+    checkpoint: PolicyCheckpoint;
+    bestCheckpoint: PolicyCheckpoint;
+    statusMessage: string;
+  }) => void;
+  onPaused?: (
+    metrics: TrainingMetrics,
+    checkpoint: PolicyCheckpoint,
+    bestBrain: BestBrainSummary,
+    bestCheckpoint: PolicyCheckpoint
+  ) => void;
+  onReady?: (
+    metrics: TrainingMetrics,
+    checkpoint: PolicyCheckpoint,
+    bestBrain: BestBrainSummary,
+    bestCheckpoint: PolicyCheckpoint
+  ) => void;
   onEvalResult?: (summary: EvalBatchSummary) => void;
   onMonteCarloResult?: (summary: MonteCarloSummary) => void;
   onError?: (message: string) => void;
@@ -26,7 +51,7 @@ export interface PPOWorkerCallbacks {
 
 /**
  * Main-thread bridge for the PPO training Web Worker (`ppoWorker.ts`),
- * with graceful async fallback if a constrained runtime disallows module Workers.
+ * with session-ID staleness filtering and graceful async fallback.
  */
 export class PPOWorkerClient {
   private worker: Worker | null = null;
@@ -35,9 +60,24 @@ export class PPOWorkerClient {
   private fallbackRunning = false;
   private callbacks: PPOWorkerCallbacks;
   private disposed = false;
+  private currentSessionId = 1;
 
   constructor(callbacks: PPOWorkerCallbacks) {
     this.callbacks = callbacks;
+  }
+
+  getSessionId(): number {
+    return this.currentSessionId;
+  }
+
+  bumpSession(): number {
+    this.currentSessionId += 1;
+    this.fallbackRunning = false;
+    if (this.fallbackTimer !== null) {
+      clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
+    return this.currentSessionId;
   }
 
   private ensureWorkerOrFallback(
@@ -74,20 +114,45 @@ export class PPOWorkerClient {
   }
 
   private handleOutbound(msg: WorkerOutboundMessage): void {
+    if (msg.sessionId !== this.currentSessionId) {
+      return;
+    }
     switch (msg.type) {
       case "READY":
-        this.callbacks.onReady?.(msg.metrics, msg.checkpoint);
+        this.callbacks.onReady?.(
+          msg.metrics,
+          msg.checkpoint,
+          msg.bestBrain,
+          msg.bestCheckpoint
+        );
+        break;
+      case "WARM_START_COMPLETE":
+        this.callbacks.onWarmStartComplete?.({
+          metrics: msg.metrics,
+          evalSummary: msg.evalSummary,
+          bestBrain: msg.bestBrain,
+          checkpoint: msg.checkpoint,
+          bestCheckpoint: msg.bestCheckpoint,
+          statusMessage: msg.statusMessage,
+        });
         break;
       case "TRAINING_PROGRESS":
         this.callbacks.onProgress?.(
           msg.metrics,
           msg.checkpoint,
           msg.historyTail,
-          msg.running
+          msg.running,
+          msg.bestBrain,
+          msg.bestCheckpoint
         );
         break;
       case "PAUSED":
-        this.callbacks.onPaused?.(msg.metrics, msg.checkpoint);
+        this.callbacks.onPaused?.(
+          msg.metrics,
+          msg.checkpoint,
+          msg.bestBrain,
+          msg.bestCheckpoint
+        );
         break;
       case "EVAL_RESULT":
         this.callbacks.onEvalResult?.(msg.summary);
@@ -110,12 +175,14 @@ export class PPOWorkerClient {
   }
 
   private handleFallback(msg: WorkerInboundMessage): void {
-    if (!this.fallbackTrainer) {
+    if (!this.fallbackTrainer || msg.sessionId !== this.currentSessionId) {
       return;
     }
     const t = this.fallbackTrainer;
+    const msgSession = msg.sessionId;
     switch (msg.type) {
       case "INIT":
+        this.fallbackRunning = false;
         t.setEnvConfig(
           msg.planetId,
           msg.missionMode,
@@ -123,7 +190,12 @@ export class PPOWorkerClient {
           msg.faultConfig
         );
         t.setLearningRate(msg.learningRate);
-        this.callbacks.onReady?.(t.getLastMetrics(), t.exportCheckpoint());
+        this.callbacks.onReady?.(
+          { ...t.getLastMetrics(), stepsPerSec: 0 },
+          t.exportCheckpoint(),
+          t.getBestBrain(),
+          t.exportBestCheckpoint()
+        );
         break;
       case "START_TURBO_TRAIN": {
         t.setEnvConfig(
@@ -135,15 +207,20 @@ export class PPOWorkerClient {
         t.setLearningRate(msg.learningRate);
         this.fallbackRunning = true;
         const tick = () => {
-          if (!this.fallbackRunning || this.disposed) {
+          if (!this.fallbackRunning || this.disposed || msgSession !== this.currentSessionId) {
             return;
           }
           const metrics = t.trainOneUpdate();
+          if (msgSession !== this.currentSessionId) {
+            return;
+          }
           this.callbacks.onProgress?.(
             metrics,
             t.exportCheckpoint(),
             t.getHistory().slice(-60),
-            true
+            true,
+            t.getBestBrain(),
+            t.exportBestCheckpoint()
           );
           this.fallbackTimer = setTimeout(tick, 4);
         };
@@ -156,27 +233,64 @@ export class PPOWorkerClient {
           clearTimeout(this.fallbackTimer);
           this.fallbackTimer = null;
         }
-        this.callbacks.onPaused?.(t.getLastMetrics(), t.exportCheckpoint());
+        this.callbacks.onPaused?.(
+          { ...t.getLastMetrics(), stepsPerSec: 0 },
+          t.exportCheckpoint(),
+          t.getBestBrain(),
+          t.exportBestCheckpoint()
+        );
         break;
       case "WARM_START": {
-        const metrics = t.warmStartFromGuidance(msg.episodes ?? 12, msg.epochs ?? 8);
-        this.callbacks.onProgress?.(
-          metrics,
-          t.exportCheckpoint(),
-          t.getHistory().slice(-60),
-          this.fallbackRunning
-        );
+        this.fallbackRunning = false;
+        if (this.fallbackTimer !== null) {
+          clearTimeout(this.fallbackTimer);
+          this.fallbackTimer = null;
+        }
+        setTimeout(() => {
+          if (this.disposed || msgSession !== this.currentSessionId) {
+            return;
+          }
+          t.setEnvConfig(
+            msg.planetId,
+            msg.missionMode,
+            msg.randomizeSpawn,
+            msg.faultConfig
+          );
+          t.setLearningRate(msg.learningRate);
+          const res = t.warmStartWithSummary(msg.episodes ?? 12, msg.epochs ?? 14);
+          if (msgSession !== this.currentSessionId) {
+            return;
+          }
+          this.callbacks.onWarmStartComplete?.({
+            metrics: res.metrics,
+            evalSummary: res.evalSummary,
+            bestBrain: res.bestBrain,
+            checkpoint: res.checkpoint,
+            bestCheckpoint: res.bestCheckpoint,
+            statusMessage: res.statusMessage,
+          });
+        }, 0);
         break;
       }
       case "SYNC_WEIGHTS":
       case "LOAD_CHECKPOINT":
         t.loadCheckpoint(msg.checkpoint);
-        this.callbacks.onReady?.(t.getLastMetrics(), t.exportCheckpoint());
+        this.callbacks.onReady?.(
+          { ...t.getLastMetrics(), stepsPerSec: 0 },
+          t.exportCheckpoint(),
+          t.getBestBrain(),
+          t.exportBestCheckpoint()
+        );
         break;
       case "RESET_WEIGHTS":
         this.fallbackRunning = false;
         t.resetWeights(msg.seed ?? 42);
-        this.callbacks.onReady?.(t.getLastMetrics(), t.exportCheckpoint());
+        this.callbacks.onReady?.(
+          t.getLastMetrics(),
+          t.exportCheckpoint(),
+          t.getBestBrain(),
+          t.exportBestCheckpoint()
+        );
         break;
       case "EVALUATE_BATCH":
         this.callbacks.onEvalResult?.(
@@ -191,7 +305,7 @@ export class PPOWorkerClient {
             planetId: msg.planetId,
             missionMode: msg.missionMode,
             faultConfig: msg.faultConfig,
-            checkpoint: msg.pilot === "ai_ppo" ? t.exportCheckpoint() : undefined,
+            checkpoint: msg.pilot === "ai_ppo" ? t.exportBestCheckpoint() : undefined,
             seed: msg.seed ?? 2026,
           })
         );
@@ -209,6 +323,7 @@ export class PPOWorkerClient {
     this.ensureWorkerOrFallback(planetId, missionMode, randomizeSpawn, learningRate);
     this.post({
       type: "INIT",
+      sessionId: this.currentSessionId,
       planetId,
       missionMode,
       randomizeSpawn,
@@ -228,6 +343,7 @@ export class PPOWorkerClient {
     this.ensureWorkerOrFallback(planetId, missionMode, randomizeSpawn, learningRate);
     this.post({
       type: "START_TURBO_TRAIN",
+      sessionId: this.currentSessionId,
       planetId,
       missionMode,
       randomizeSpawn,
@@ -248,6 +364,7 @@ export class PPOWorkerClient {
     this.ensureWorkerOrFallback(planetId, missionMode, true, 6e-4);
     this.post({
       type: "RUN_MONTE_CARLO",
+      sessionId: this.currentSessionId,
       episodes,
       pilot,
       planetId,
@@ -261,32 +378,67 @@ export class PPOWorkerClient {
     if (!this.worker && !this.fallbackTrainer) {
       return;
     }
-    this.post({ type: "PAUSE_TRAIN" });
+    this.post({ type: "PAUSE_TRAIN", sessionId: this.currentSessionId });
   }
 
-  warmStart(episodes = 12, epochs = 8): void {
-    this.ensureWorkerOrFallback();
-    this.post({ type: "WARM_START", episodes, epochs });
+  warmStart(
+    planetId: PlanetId,
+    missionMode: MissionMode,
+    randomizeSpawn: boolean,
+    learningRate: number,
+    faultConfig?: FaultConfig,
+    episodes = 12,
+    epochs = 14
+  ): void {
+    this.ensureWorkerOrFallback(planetId, missionMode, randomizeSpawn, learningRate);
+    this.post({
+      type: "WARM_START",
+      sessionId: this.currentSessionId,
+      planetId,
+      missionMode,
+      randomizeSpawn,
+      learningRate,
+      faultConfig,
+      episodes,
+      epochs,
+    });
   }
 
   syncWeights(checkpoint: PolicyCheckpoint): void {
     this.ensureWorkerOrFallback();
-    this.post({ type: "SYNC_WEIGHTS", checkpoint });
+    this.post({
+      type: "SYNC_WEIGHTS",
+      sessionId: this.currentSessionId,
+      checkpoint,
+    });
   }
 
   loadCheckpoint(checkpoint: PolicyCheckpoint): void {
     this.ensureWorkerOrFallback();
-    this.post({ type: "LOAD_CHECKPOINT", checkpoint });
+    this.post({
+      type: "LOAD_CHECKPOINT",
+      sessionId: this.currentSessionId,
+      checkpoint,
+    });
   }
 
   resetWeights(seed = 42): void {
     this.ensureWorkerOrFallback();
-    this.post({ type: "RESET_WEIGHTS", seed });
+    this.post({
+      type: "RESET_WEIGHTS",
+      sessionId: this.currentSessionId,
+      seed,
+    });
   }
 
   evaluateBatch(episodes = 10): void {
     this.ensureWorkerOrFallback();
-    this.post({ type: "EVALUATE_BATCH", episodes, deterministic: true });
+    this.post({
+      type: "EVALUATE_BATCH",
+      sessionId: this.currentSessionId,
+      episodes,
+      deterministic: true,
+    });
   }
 
   dispose(): void {

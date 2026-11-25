@@ -113,6 +113,8 @@ export class PostProcessingPipeline {
   }
 
   render(scene: THREE.Scene, camera: THREE.Camera): void {
+    this.renderer.info.autoReset = false;
+    this.renderer.info.reset();
     if (this.quality === "low") {
       this.renderer.render(scene, camera);
       return;
