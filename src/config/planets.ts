@@ -1,6 +1,8 @@
 export type PlanetId = "mars" | "earth" | "moon";
 
 export const PLANET_ORDER: readonly PlanetId[] = ["mars", "earth", "moon"] as const;
+export const DEFAULT_PLANET_ID: PlanetId = "earth";
+export const DESTINATION_DISPLAY_ORDER: readonly PlanetId[] = ["earth", "moon", "mars"] as const;
 
 export interface PlanetPhysics {
   /** Verified NASA Planetary Fact Sheet surface gravity (m/s^2). */
@@ -61,7 +63,7 @@ export interface PlanetTerrainParams {
 export interface PlanetScaleParams {
   /** Verified NASA mean volumetric planetary radius (km). */
   readonly realRadiusKm: number;
-  /** Interactive planetary scale divisor (1:50 keeps surface-to-orbit ascents ~40-90s). */
+  /** Physical scale ratio (1 = true 1:1 full planetary scale). */
   readonly simScaleRatio: number;
   /** Simulated 3D globe radius in world meters (realRadiusKm * 1000 / simScaleRatio). */
   readonly simRadiusM: number;
@@ -136,10 +138,10 @@ export const PLANETS: Record<PlanetId, PlanetConfig> = {
     },
     scale: {
       realRadiusKm: 3389.5,
-      simScaleRatio: 50,
-      simRadiusM: 67_790,
-      atmosphereTopM: 18_000,
-      targetOrbitAltM: 22_000,
+      simScaleRatio: 1,
+      simRadiusM: 3_389_500,
+      atmosphereTopM: 90_000,
+      targetOrbitAltM: 200_000,
       launchSiteCoords: { latDeg: 18.38, lonDeg: 77.58 },
       localTerrainRadiusM: 24_000,
     },
@@ -162,43 +164,43 @@ export const PLANETS: Record<PlanetId, PlanetConfig> = {
       mieCoeff: 0.011,
       mieDirectionalG: 0.82,
       atmosphereStrength: 1.0,
-      zenithColor: "#154994",
-      horizonColor: "#9fd0f2",
-      sunColor: "#fff6e5",
-      sunDirection: [0.58, 0.44, -0.68],
+      zenithColor: "#1457b8",
+      horizonColor: "#a8dcf8",
+      sunColor: "#fff8eb",
+      sunDirection: [0.68, 0.56, 0.47],
       sunIntensity: 22.0,
       starIntensity: 0.0,
       hasClouds: true,
-      fogColor: "#9ccae8",
-      fogDensity: 0.00018,
+      fogColor: "#b8dcf2",
+      fogDensity: 0.00010,
     },
     lighting: {
-      sunLightColor: "#fff3df",
-      sunLightIntensity: 3.4,
-      hemiSkyColor: "#7ab4e8",
-      hemiGroundColor: "#364432",
-      hemiIntensity: 0.85,
-      exposure: 1.0,
+      sunLightColor: "#fff5e4",
+      sunLightIntensity: 3.3,
+      hemiSkyColor: "#9cd3ff",
+      hemiGroundColor: "#b8aa8e",
+      hemiIntensity: 0.95,
+      exposure: 1.04,
     },
     terrain: {
-      heightScale: 46,
-      ridgeWeight: 0.44,
+      heightScale: 5,
+      ridgeWeight: 0.16,
       craterWeight: 0.0,
       noiseFrequency: 0.00125,
       seed: 7309,
-      soilPalette: ["#7d745a", "#415938", "#5b6456"],
-      dustColor: "#9e9478",
-      baseRoughness: 0.86,
-      padConcreteTint: "#8a9096",
+      soilPalette: ["#dfcaa0", "#6f8d54", "#b59d72"],
+      dustColor: "#d9c7a3",
+      baseRoughness: 0.84,
+      padConcreteTint: "#a2a8ae",
     },
     scale: {
       realRadiusKm: 6371.0,
-      simScaleRatio: 50,
-      simRadiusM: 127_420,
-      atmosphereTopM: 28_000,
-      targetOrbitAltM: 42_000,
+      simScaleRatio: 1,
+      simRadiusM: 6_371_000,
+      atmosphereTopM: 120_000,
+      targetOrbitAltM: 200_000,
       launchSiteCoords: { latDeg: 25.997, lonDeg: -97.156 },
-      localTerrainRadiusM: 28_000,
+      localTerrainRadiusM: 36_000,
     },
   },
   moon: {
@@ -250,10 +252,10 @@ export const PLANETS: Record<PlanetId, PlanetConfig> = {
     },
     scale: {
       realRadiusKm: 1737.4,
-      simScaleRatio: 50,
-      simRadiusM: 34_748,
+      simScaleRatio: 1,
+      simRadiusM: 1_737_400,
       atmosphereTopM: 0,
-      targetOrbitAltM: 14_000,
+      targetOrbitAltM: 100_000,
       launchSiteCoords: { latDeg: -89.5, lonDeg: 0.0 },
       localTerrainRadiusM: 15_000,
     },

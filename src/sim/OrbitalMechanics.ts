@@ -170,7 +170,8 @@ export function computeOrbitalElements(
     }
   }
 
-  const minSafePeriapsisAlt = Math.max(atmosphereTopM * 0.85, 4_000);
+  const minSafePeriapsisAlt =
+    atmosphereTopM > 0 ? Math.max(atmosphereTopM * 1.15, 100_000) : 40_000;
   const isOrbitAchieved =
     isBoundOrbit &&
     periapsisAltM >= minSafePeriapsisAlt &&
@@ -239,7 +240,7 @@ export function sampleOrbitPoints(
     let pvx = vx;
     let pvy = vy;
     let pvz = vz;
-    const stepDt = Math.max(0.4, Math.min(2.5, simRadiusM / 25_000));
+    const stepDt = clamp(simRadiusM / 400_000, 1.5, 16.0);
     const maxSteps = Math.min(80, numSamples);
     for (let i = 0; i <= maxSteps; i++) {
       const rm = Math.hypot(px, py, pz);

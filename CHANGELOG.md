@@ -5,7 +5,31 @@ All notable changes to **AetherSim** are documented in this file following [Keep
 ---
 
 ## [Unreleased]
-- Future Phases B & C (14-Module Ecosystem Expansion): FMI 3.0 / OMG DDS co-simulation, spherical rotating-planet orbital propagator, offline CFD/FEA surrogates, independent AFSS monitor, and HIL FlatSat integration.
+- Future Phases B & C (14-Module Ecosystem Expansion): FMI 3.0 / OMG DDS co-simulation, full N-body / J2–Jn interplanetary orbital propagator, offline CFD/FEA surrogates, independent AFSS monitor, and HIL FlatSat integration.
+
+---
+
+## [2.0.0] — 2026-11-26
+### Added
+- **True `1:1` Real-Scale Planetary Physics & Float64 Floating-Origin Rendering (`src/config/planets.ts`, `src/sim/FlightController.ts`, `src/scene/SceneManager.ts`, `src/scene/PlanetGlobe.ts`)**:
+  - Upgraded Earth (`6,371 km`, `120 km` atmosphere, `200 km` LEO @ `~7,780 m/s`), Mars (`3,389.5 km`, `200 km` orbit), and Moon (`1,737.4 km`, `100 km` orbit) from `1:50` scale to true `1:1` planetary geometry & astrodynamics with `1x | 2x | 5x | 10x | 25x | 50x` Time Warp and jitter-free camera-relative rendering.
+- **6 Geographically Located Earth Launch Sites & Living Environments (`src/config/launchSites.ts`, `src/scene/CoastalEnvironment.ts`, `src/scene/LaunchComplex.ts`, `src/scene/EarthTileOverlay.ts`, `src/scene/PbrTextureLoader.ts`, `src/shaders/oceanShader.ts`)**:
+  - Added **Starbase Boca Chica**, **Kennedy Space Center LC-39A**, **Satish Dhawan Space Centre SHAR (Sriharikota)**, **Guiana Space Centre (Kourou)**, **Tanegashima Space Center**, and **Baikonur Cosmodrome Site 1** (oceanless Kazakh steppe + articulated 4-arm tulip stand), each rotating the `1:1` globe ENU frame, progressive 10m EOX Sentinel-2 / NASA GIBS regional tiles, site landmarks, and bundled 4K Poly Haven CC0 PBR ground/pad textures.
+- **4 Selectable 3D Rockets & Autonomous Booster RTLS (`src/config/vehicles.ts`, `src/scene/RocketFleetBuilder.ts`, `src/scene/StarshipVehicle.ts`, `src/shaders/exhaustShader.ts`, `src/effects/PropulsionEffects.ts`)**:
+  - Added **Starship + Super Heavy** (`121 m`, methalox, 18% RTLS catch), **Falcon 9 Block 5** (`70 m`, kerolox, folding carbon legs & 16% RTLS landing), **ISRO LVM3** (`43.5 m`, twin S200 solid strap-on booster separation + L110 + C25), and **NASA Saturn V** (`110.6 m`, S-IC roll pattern, 5× F-1, 5× J-2, Apollo CSM/LES), all verified to reach real `1:1` Earth LEO.
+- **Explorable Satellites, ISS, Ground Tracks & Live CelesTrak SGP4 Tracking (`src/orbital/SatelliteCatalog.ts`, `src/orbital/CelesTrakService.ts`, `src/scene/OrbitalObjectManager.ts`, `src/ui/OrbitalDrawer.ts`)**:
+  - Added `satellite.js` (`7.2.0`) SGP4 propagation with respectful CelesTrak OMM/GP live fetching (2-hour `localStorage` cache, 5s timeout, 15s rate-limited manual refresh, seamless offline fallback) and honest `LIVE` / `CACHED` / `SIMULATED` provenance + UTC timestamps.
+  - Populated Earth orbit with **ISS (ZARYA)** (detailed modular 3D mesh integrated directly with `F4 Station`), **Tiangong**, **Hubble**, **Sentinel-2A**, **NOAA-20**, **GPS III SV01**, **GOES-16**, and a 6-unit **Starlink Demo Train**, plus simulated **Moon** (`Lunar Gateway`, `LRO`) and **Mars** (`Mars Transfer Station`, `MRO`) orbiters with 3D orbital paths, ±1-orbit Earth surface ground tracks (`R + 1,800 m`), viewport click picking, and close-up 3D inspection (`CameraDirector.focusOrbitalObject`).
+- **Studio Aerospace Design System, Accessibility & Auto-Quality Guard (`src/ui/`, `src/styles/`, `src/ui/uiGuards.ts`)**:
+  - Modularized the HUD into `TopBar`, `MissionDrawer`, `OrbitalDrawer`, `AIPilotDrawer`, `ResearchDrawer`, `CameraDock`, `FlightHud`, `ToastSystem`, and `HelpModal` with Earth-first startup, responsive breakpoints (`1024px`, `1280px`, `max-height: 768px`), mutually exclusive drawer slots, layered `Escape` dismissal, full ARIA attributes, OS + manual `Reduced Motion` parity, and an optional **`Auto Quality Guard`** (`HIGH → MED → LOW` on sustained `< 32 FPS` for `4 s`).
+- **Refreshed `v2.0.0` Benchmarks, Profiling & Test Suites (`src/__tests__/`, `results/v2_*`, `docs/BENCHMARKS.md`, `docs/PERFORMANCE_REPORT.md`)**:
+  - Expanded Vitest suite to **12 files / 49 tests (`0` failures)** (`uiArchitecture`, `earthCoastline`, `cameraDirector`, `launchSitesAndFleet`, `orbitalCatalog`, plus all existing suites) and regenerated `v2.0.0` benchmarks and desktop GPU profiles.
+
+### Fixed & Improved
+- **Authoritative `F1–F8` Camera Director Overhaul (`src/scene/CameraDirector.ts`, `src/ui/CameraDock.ts`, `electron/main.cjs`)**:
+  - Replaced laggy tween transitions with synchronous zero-lag state transitions, live Three.js world-matrix framing across pad/gravity-turn/orbit/boostback, capture-phase `F1–F8` hotkeys, synchronized `Ship | Booster` indicators, and near-plane protection (`near = 0.5 m`) for close-up LEO/MEO/GEO spacecraft inspection.
+- **Packaging Metadata (`package.json`, `vite.config.ts`)**:
+  - Added package `author` metadata and Vite 8 `satellite.js` pure-JS SGP4 resolution alongside `https://celestrak.org` CSP allow-listing for dev & prod Electron builds.
 
 ---
 

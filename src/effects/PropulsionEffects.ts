@@ -1,11 +1,19 @@
 import * as THREE from "three";
 import type { PlanetConfig } from "../config/planets";
+import type { PlumeStyle } from "../config/vehicles";
+import type { NozzleSocketSpec } from "../scene/RocketFleetBuilder";
 import {
   createExhaustPlumeGeometry,
   createExhaustPlumeMaterial,
   updateExhaustPlumeUniforms,
 } from "../shaders/exhaustShader";
 import type { FlightTelemetry } from "../sim/FlightController";
+
+function plumeStyleToIndex(style: PlumeStyle): number {
+  if (style === "kerolox") return 1;
+  if (style === "solid_hybrid") return 2;
+  return 0;
+}
 
 export type QualityPreset = "low" | "med" | "high";
 
@@ -113,6 +121,10 @@ export class PropulsionEffects {
   private readonly plumeGeom: THREE.BufferGeometry;
   private readonly boosterPlumes: Array<{ mesh: THREE.Mesh; mat: THREE.ShaderMaterial }> = [];
   private readonly shipPlumes: Array<{ mesh: THREE.Mesh; mat: THREE.ShaderMaterial }> = [];
+  private readonly sidePlumes: Array<{ mesh: THREE.Mesh; mat: THREE.ShaderMaterial }> = [];
+  private boosterStyleIdx = 0;
+  private shipStyleIdx = 0;
+  private sideStyleIdx = 0;
 
   private readonly rcsCones: Array<{
     mesh: THREE.Mesh;
@@ -136,55 +148,43 @@ export class PropulsionEffects {
     initialPlanet: PlanetConfig,
     boosterAnchor: THREE.Group,
     shipAnchor: THREE.Group,
-    rcsAnchor: THREE.Group
+    rcsAnchor: THREE.Group,
+    sideAnchors?: { left: THREE.Group; right: THREE.Group }
   ) {
     this.planet = initialPlanet;
     this.spriteTex = createSoftSpriteTexture();
     this.plumeGeom = createExhaustPlumeGeometry();
 
-    // 10 Booster plume sockets (3 center + 7 outer ring)
-    const boosterCoords: Array<[number, number]> = [
-      [0.85, 0],
-      [-0.42, 0.74],
-      [-0.42, -0.74],
-      [3.5, 0],
-      [2.18, 2.74],
-      [-0.78, 3.41],
-      [-3.15, 1.52],
-      [-3.15, -1.52],
-      [-0.78, -3.41],
-      [2.18, -2.74],
-    ];
-    boosterCoords.forEach(([px, pz], idx) => {
+    // Up to 10 booster sockets + 6 ship sockets + 2 side-booster sockets
+    for (let idx = 0; idx < 10; idx++) {
       const mat = createExhaustPlumeMaterial(idx * 1.73);
       const mesh = new THREE.Mesh(this.plumeGeom, mat);
-      mesh.position.set(px, -0.95, pz);
-      mesh.scale.set(1.35, 1.0, 1.35);
       mesh.visible = false;
       boosterAnchor.add(mesh);
       this.boosterPlumes.push({ mesh, mat });
-    });
+    }
 
-    // 6 Ship plume sockets (3 vacuum + 3 sea-level)
-    const shipCoords: Array<{ x: number; z: number; scale: number }> = [
-      { x: 0.8, z: -0.45, scale: 1.1 },
-      { x: -0.8, z: -0.45, scale: 1.1 },
-      { x: 0.0, z: 0.92, scale: 1.1 },
-      { x: 2.2, z: 1.25, scale: 1.65 },
-      { x: -2.2, z: 1.25, scale: 1.65 },
-      { x: 0.0, z: -2.55, scale: 1.65 },
-    ];
-    shipCoords.forEach((s, idx) => {
+    for (let idx = 0; idx < 6; idx++) {
       const mat = createExhaustPlumeMaterial(10 + idx * 2.1);
       const mesh = new THREE.Mesh(this.plumeGeom, mat);
-      mesh.position.set(s.x, -0.85, s.z);
-      mesh.scale.set(s.scale, 1.0, s.scale);
       mesh.visible = false;
       shipAnchor.add(mesh);
       this.shipPlumes.push({ mesh, mat });
-    });
+    }
 
-    // Cold-gas RCS thruster cones around Starship nose & aft
+    if (sideAnchors) {
+      [sideAnchors.left, sideAnchors.right].forEach((anchor, idx) => {
+        const mat = createExhaustPlumeMaterial(22 + idx * 3.1);
+        const mesh = new THREE.Mesh(this.plumeGeom, mat);
+        mesh.position.set(0, -1.1, 0);
+        mesh.scale.set(1.5, 1.0, 1.5);
+        mesh.visible = false;
+        anchor.add(mesh);
+        this.sidePlumes.push({ mesh, mat });
+      });
+    }
+
+    // Cold-gas RCS thruster cones around upper stage
     this.rcsConeGeom = new THREE.ConeGeometry(0.45, 3.8, 10, 1, true);
     this.rcsConeGeom.translate(0, -1.9, 0);
     this.rcsConeMat = new THREE.MeshBasicMaterial({
@@ -210,17 +210,12 @@ export class PropulsionEffects {
       this.rcsCones.push({ mesh, axis, sign });
     };
 
-    // Pitch pods (+/-X at nose & aft)
     addRcs([3.2, 34, 0], [0, 0, Math.PI * 0.5], "pitch", 1);
     addRcs([-3.2, 34, 0], [0, 0, -Math.PI * 0.5], "pitch", -1);
     addRcs([-4.5, 6, 0], [0, 0, -Math.PI * 0.5], "pitch", 1);
     addRcs([4.5, 6, 0], [0, 0, Math.PI * 0.5], "pitch", -1);
-
-    // Lateral roll pods (+/-Z at nose & aft)
     addRcs([0, 34, 3.2], [-Math.PI * 0.5, 0, 0], "roll", 1);
     addRcs([0, 34, -3.2], [Math.PI * 0.5, 0, 0], "roll", -1);
-
-    // Yaw spin pods (tangential)
     addRcs([4.5, 16, 1.2], [Math.PI * 0.5, 0, 0], "yaw", 1);
     addRcs([-4.5, 16, -1.2], [-Math.PI * 0.5, 0, 0], "yaw", -1);
 
@@ -229,6 +224,38 @@ export class PropulsionEffects {
     this.worldGroup.add(this.cryoVent.points, this.groundBlast.points);
 
     this.setPlanet(initialPlanet);
+  }
+
+  reconfigureSockets(spec: {
+    boosterSockets: readonly NozzleSocketSpec[];
+    shipSockets: readonly NozzleSocketSpec[];
+    boosterPlumeStyle: PlumeStyle;
+    shipPlumeStyle: PlumeStyle;
+    sidePlumeStyle: PlumeStyle;
+  }): void {
+    this.boosterStyleIdx = plumeStyleToIndex(spec.boosterPlumeStyle);
+    this.shipStyleIdx = plumeStyleToIndex(spec.shipPlumeStyle);
+    this.sideStyleIdx = plumeStyleToIndex(spec.sidePlumeStyle);
+
+    this.boosterPlumes.forEach((p, idx) => {
+      const sock = spec.boosterSockets[idx];
+      if (sock) {
+        p.mesh.position.copy(sock.pos);
+        p.mesh.scale.set(sock.plumeScale, 1.0, sock.plumeScale);
+      } else {
+        p.mesh.visible = false;
+      }
+    });
+    this.shipPlumes.forEach((p, idx) => {
+      const sock = spec.shipSockets[idx];
+      if (sock) {
+        p.mesh.position.copy(sock.pos);
+        p.mesh.scale.set(sock.plumeScale, 1.0, sock.plumeScale);
+      } else {
+        p.mesh.visible = false;
+      }
+    });
+    this.reset();
   }
 
   private rand(): number {
@@ -274,6 +301,9 @@ export class PropulsionEffects {
     for (const p of this.shipPlumes) {
       p.mesh.visible = false;
     }
+    for (const p of this.sidePlumes) {
+      p.mesh.visible = false;
+    }
     for (const r of this.rcsCones) {
       r.mesh.visible = false;
     }
@@ -281,22 +311,50 @@ export class PropulsionEffects {
 
   update(dt: number, telemetry: FlightTelemetry, vehicleIntact: boolean): void {
     this.elapsedSec += dt;
-    const pressureBar = this.planet.physics.surfacePressureBar;
+    const basePressureBar = this.planet.physics.surfacePressureBar;
+    const scaleHeightKm = this.planet.physics.atmosphereScaleHeightKm;
+    const shipPressureBar =
+      basePressureBar > 0 && scaleHeightKm > 0
+        ? basePressureBar * Math.exp(-Math.max(0, telemetry.altitudeM) / (scaleHeightKm * 1000))
+        : 0;
+    const boosterPressureBar =
+      basePressureBar > 0 && scaleHeightKm > 0
+        ? basePressureBar *
+          Math.exp(-Math.max(0, telemetry.booster.altitudeM) / (scaleHeightKm * 1000))
+        : 0;
 
-    // 1. GLSL Mach-diamond exhaust plumes (Full-stack ascent + detached Booster RTLS inner-3 Raptors)
+    // 1. GLSL exhaust plumes (Full-stack ascent, twin S200 side boosters, RTLS booster, Upper stage)
     const maxBoosterPlumes = this.quality === "low" ? 3 : this.quality === "med" ? 6 : 10;
     const maxShipPlumes = this.quality === "low" ? 3 : 6;
+    const sideActive =
+      vehicleIntact && !telemetry.sideBoostersSeparated && telemetry.sideBoosterThrottle > 0.02;
     const bAttachedActive =
       vehicleIntact && !telemetry.stageSeparated && telemetry.boosterThrottle > 0.02;
     const bDetachedActive =
       telemetry.stageSeparated &&
       telemetry.booster.active &&
       telemetry.booster.status !== "BOOSTER_CRASHED" &&
+      telemetry.booster.status !== "BOOSTER_EXPENDED" &&
       telemetry.booster.throttle > 0.02;
     const sActive = vehicleIntact && telemetry.shipThrottle > 0.02;
 
-    const bLen = 19.0 + (1 - Math.min(1, pressureBar)) * 12.0;
-    const sLen = 16.0 + (1 - Math.min(1, pressureBar)) * 11.0;
+    const bEffPressure = telemetry.stageSeparated ? boosterPressureBar : shipPressureBar;
+    const bLen = 18.0 + (1 - Math.min(1, bEffPressure)) * 10.0;
+    const sLen = 15.0 + (1 - Math.min(1, shipPressureBar)) * 9.5;
+
+    this.sidePlumes.forEach((p) => {
+      p.mesh.visible = sideActive;
+      if (sideActive) {
+        updateExhaustPlumeUniforms(
+          p.mat,
+          this.elapsedSec,
+          telemetry.sideBoosterThrottle,
+          shipPressureBar,
+          bLen * 1.15,
+          this.sideStyleIdx
+        );
+      }
+    });
 
     this.boosterPlumes.forEach((p, idx) => {
       const showAttached = bAttachedActive && idx < maxBoosterPlumes;
@@ -306,7 +364,14 @@ export class PropulsionEffects {
       if (show) {
         const thr = showDetached ? telemetry.booster.throttle : telemetry.boosterThrottle;
         const len = showDetached ? bLen * 0.72 : bLen;
-        updateExhaustPlumeUniforms(p.mat, this.elapsedSec, thr, pressureBar, len);
+        updateExhaustPlumeUniforms(
+          p.mat,
+          this.elapsedSec,
+          thr,
+          bEffPressure,
+          len,
+          this.boosterStyleIdx
+        );
       }
     });
 
@@ -318,8 +383,9 @@ export class PropulsionEffects {
           p.mat,
           this.elapsedSec,
           telemetry.shipThrottle,
-          pressureBar,
-          sLen
+          shipPressureBar,
+          sLen,
+          this.shipStyleIdx
         );
       }
     });
@@ -364,9 +430,13 @@ export class PropulsionEffects {
     }
     this.stepParticles(this.cryoVent, dt, cryoBudget, 0.0, 0.35);
 
-    // 4. Planet-specific ground blast dust / steam clouds (for Starship stack AND returning RTLS Booster)
+    // 4. Planet-specific ground blast dust / steam clouds (for active launch stack & RTLS booster)
     const blastBudget = this.quality === "low" ? 120 : this.quality === "med" ? 260 : 420;
-    const totalThrottle = Math.max(telemetry.boosterThrottle, telemetry.shipThrottle);
+    const totalThrottle = Math.max(
+      telemetry.boosterThrottle,
+      telemetry.shipThrottle,
+      telemetry.sideBoosterThrottle
+    );
     const spawnBlastAt = (bx: number, bz: number, surfY: number, altM: number, thr: number) => {
       const prox = 1 - altM / 155;
       const count = Math.ceil((this.quality === "low" ? 3 : this.quality === "med" ? 6 : 9) * prox);
@@ -455,6 +525,9 @@ export class PropulsionEffects {
       p.mat.dispose();
     }
     for (const p of this.shipPlumes) {
+      p.mat.dispose();
+    }
+    for (const p of this.sidePlumes) {
       p.mat.dispose();
     }
     this.rcsConeGeom.dispose();

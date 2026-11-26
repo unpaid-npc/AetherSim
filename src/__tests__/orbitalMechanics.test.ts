@@ -7,8 +7,8 @@ import {
   sampleOrbitPoints,
 } from "../sim/OrbitalMechanics";
 
-describe("Milestone 5 Stage 5B & 5C — Spherical Orbital Mechanics, 18% Staging & Autonomous Booster RTLS", () => {
-  it("computes exact Keplerian circular orbital elements and closed 3D sample loops across Moon, Mars, and Earth", () => {
+describe("True 1:1 Orbital Mechanics, 18% Staging & Autonomous Booster RTLS", () => {
+  it("computes exact Keplerian circular orbital elements (Earth 200 km = 7,784 +/- 20 m/s) and closed loops across Moon, Mars, and Earth", () => {
     for (const id of PLANET_ORDER) {
       const cfg = getPlanetConfig(id);
       const R = cfg.scale.simRadiusM;
@@ -17,6 +17,10 @@ describe("Milestone 5 Stage 5B & 5C — Spherical Orbital Mechanics, 18% Staging
       const mu = computeGravitationalParameter(g0, R);
       const rCirc = R + alt;
       const vCirc = Math.sqrt(mu / rCirc);
+
+      if (id === "earth") {
+        expect(Math.abs(vCirc - 7784)).toBeLessThanOrEqual(20);
+      }
 
       const orb = computeOrbitalElements(
         { x: 0, y: alt, z: 0 },
@@ -48,11 +52,11 @@ describe("Milestone 5 Stage 5B & 5C — Spherical Orbital Mechanics, 18% Staging
     const g0 = mars.physics.gravityMps2;
     const mu = computeGravitationalParameter(g0, R);
 
-    // Elliptical transfer orbit: faster than circular at periapsis 10 km
-    const rp = R + 10_000;
+    // Elliptical transfer orbit: faster than circular at periapsis 140 km
+    const rp = R + 140_000;
     const vEllip = Math.sqrt(mu / rp) * 1.12;
     const ellip = computeOrbitalElements(
-      { x: 0, y: 10_000, z: 0 },
+      { x: 0, y: 140_000, z: 0 },
       { x: vEllip, y: 0, z: 0 },
       R,
       g0,
@@ -62,11 +66,11 @@ describe("Milestone 5 Stage 5B & 5C — Spherical Orbital Mechanics, 18% Staging
     expect(ellip.eccentricity).toBeGreaterThan(0.15);
     expect(ellip.eccentricity).toBeLessThan(0.8);
     expect(ellip.apoapsisAltM).toBeGreaterThan(ellip.periapsisAltM);
-    expect(ellip.periapsisAltM).toBeCloseTo(10_000, 0);
+    expect(ellip.periapsisAltM).toBeCloseTo(140_000, 0);
 
     // Suborbital trajectory: slow horizontal speed -> periapsis below surface (Pe <= 0)
-    const subPos = { x: 0, y: 12_000, z: 0 };
-    const subVel = { x: 140, y: 40, z: 0 };
+    const subPos = { x: 0, y: 60_000, z: 0 };
+    const subVel = { x: 800, y: 180, z: 0 };
     const sub = computeOrbitalElements(subPos, subVel, R, g0, mars.scale.atmosphereTopM);
     expect(sub.isBoundOrbit).toBe(true);
     expect(sub.periapsisAltM).toBeLessThanOrEqual(0);
@@ -94,20 +98,22 @@ describe("Milestone 5 Stage 5B & 5C — Spherical Orbital Mechanics, 18% Staging
       let tel = ctrl.getTelemetry();
       let timeToOrbitSec = 0;
       let altAtSepM = 0;
+      let speedAtSepMps = 0;
       let fuelAtSep = 1;
       const seenBoosterStates = new Set<BoosterStatus>([tel.booster.status]);
 
       const isBoosterDone = (s: BoosterStatus) =>
         s === "BOOSTER_CAUGHT" || s === "BOOSTER_LANDED" || s === "BOOSTER_CRASHED";
 
-      // Simulate up to 600s of flight via fixed 60 Hz steps until both Ship orbit and Booster RTLS settle
-      for (let i = 0; i < 60 * 600; i++) {
+      // Simulate up to 1200s of 1:1 flight via fixed 60 Hz steps until both Ship orbit and Booster RTLS settle
+      for (let i = 0; i < 60 * 1200; i++) {
         const wasSep = tel.stageSeparated;
         tel = ctrl.update(1 / 60);
         seenBoosterStates.add(tel.booster.status);
 
         if (!wasSep && tel.stageSeparated) {
           altAtSepM = tel.altitudeM;
+          speedAtSepMps = tel.speedMps;
           fuelAtSep = tel.booster.fuel;
         }
         if (tel.phase === "CRASHED") {
@@ -125,19 +131,19 @@ describe("Milestone 5 Stage 5B & 5C — Spherical Orbital Mechanics, 18% Staging
         id === "earth" ? "BOOSTER_CAUGHT" : "BOOSTER_LANDED";
 
       console.log(
-        `[Stage 5C Launch+RTLS Proof] planet=${id} sepAlt=${(altAtSepM / 1000).toFixed(2)}km sepFuel=${(fuelAtSep * 100).toFixed(1)}% | orbit t=${timeToOrbitSec.toFixed(1)}s Ap=${(tel.orbital.apoapsisAltM / 1000).toFixed(2)}km Pe=${(tel.orbital.periapsisAltM / 1000).toFixed(2)}km e=${tel.orbital.eccentricity.toFixed(4)} | booster=${tel.booster.status} offset=${tel.booster.touchdownOffsetM?.toFixed(2) ?? "null"}m |vy|=${tel.booster.touchdownVerticalSpeedMps?.toFixed(2) ?? "null"}m/s`
+        `[1:1 Launch+RTLS Proof] planet=${id} sepAlt=${(altAtSepM / 1000).toFixed(2)}km sepSpeed=${speedAtSepMps.toFixed(0)}m/s sepFuel=${(fuelAtSep * 100).toFixed(1)}% | orbit t=${timeToOrbitSec.toFixed(1)}s Ap=${(tel.orbital.apoapsisAltM / 1000).toFixed(2)}km Pe=${(tel.orbital.periapsisAltM / 1000).toFixed(2)}km v=${tel.speedMps.toFixed(1)}m/s e=${tel.orbital.eccentricity.toFixed(4)} | booster=${tel.booster.status} offset=${tel.booster.touchdownOffsetM?.toFixed(2) ?? "null"}m |vy|=${tel.booster.touchdownVerticalSpeedMps?.toFixed(2) ?? "null"}m/s`
       );
 
-      // Realistic propellant-driven staging (18% RTLS reserve, never premature 2.2 km trigger)
+      // Realistic propellant-driven staging (18% RTLS reserve)
       expect(fuelAtSep).toBeLessThanOrEqual(0.22);
-      expect(altAtSepM).toBeGreaterThan(3_000);
+      expect(altAtSepM).toBeGreaterThan(id === "earth" ? 40_000 : 12_000);
 
-      // Starship stable orbit
+      // Starship stable 1:1 orbit
       expect(tel.phase).toBe("ORBIT_ACHIEVED");
       expect(tel.orbital.orbitAchieved).toBe(true);
-      expect(tel.orbital.eccentricity).toBeLessThan(0.15);
+      expect(tel.orbital.eccentricity).toBeLessThan(0.05);
       expect(tel.orbital.periapsisAltM).toBeGreaterThanOrEqual(
-        Math.max(cfg.scale.atmosphereTopM * 0.85, 4_000)
+        cfg.scale.atmosphereTopM > 0 ? Math.max(cfg.scale.atmosphereTopM * 1.15, 140_000) : 60_000
       );
       expect(tel.crashEvent).toBeNull();
 
@@ -170,20 +176,20 @@ describe("Milestone 5 Stage 5B & 5C — Spherical Orbital Mechanics, 18% Staging
     }
   });
 
-  it("supports deterministic TimeWarp stepping (1x..10x) and auto-resets warp to 1x on reset", () => {
+  it("supports deterministic TimeWarp stepping (1x..50x) and auto-resets warp to 1x on reset", () => {
     const ctrl = new FlightController("moon", 1.6, "launch");
-    ctrl.setTimeWarp(10);
-    expect(ctrl.getTimeWarp()).toBe(10);
+    ctrl.setTimeWarp(50);
+    expect(ctrl.getTimeWarp()).toBe(50);
     ctrl.startMission();
 
-    // 2.0 real seconds at 10x warp = 20.0 simulated seconds (well past T-10s countdown & liftoff)
+    // 2.0 real seconds at 50x warp = 100.0 simulated seconds (well past T-10s countdown & liftoff)
     let tel = ctrl.getTelemetry();
     for (let i = 0; i < 120; i++) {
       tel = ctrl.update(1 / 60);
     }
-    expect(tel.missionTimeSec).toBeCloseTo(20.0, 1);
-    expect(tel.altitudeM).toBeGreaterThan(200);
-    expect(tel.orbital.timeWarp).toBe(10);
+    expect(tel.missionTimeSec).toBeCloseTo(100.0, 1);
+    expect(tel.altitudeM).toBeGreaterThan(20_000);
+    expect(tel.orbital.timeWarp).toBe(50);
 
     ctrl.reset("moon", 1.6, "launch");
     expect(ctrl.getTimeWarp()).toBe(1);

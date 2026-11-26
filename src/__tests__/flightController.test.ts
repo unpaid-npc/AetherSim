@@ -28,9 +28,12 @@ describe("FlightController planetary launch & landing simulation", () => {
       seenPhases.add(tel.phase);
       expect(tel.phase).toBe("COUNTDOWN");
 
-      for (let i = 0; i < 60 * 55; i++) {
+      for (let i = 0; i < 60 * 240; i++) {
         tel = ctrl.update(1 / 60);
         seenPhases.add(tel.phase);
+        if (tel.stageSeparated && tel.shipFuel < 0.99 && tel.altitudeM > 2500) {
+          break;
+        }
       }
 
       expect(seenPhases.has("COUNTDOWN")).toBe(true);

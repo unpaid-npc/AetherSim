@@ -25,6 +25,7 @@ uniform vec3 uAtmosphereColor;
 uniform vec3 uHorizonColor;
 uniform float uStrength;
 uniform float uCameraAltitude;
+uniform float uAtmosphereTop;
 
 varying vec3 vWorldNormal;
 varying vec3 vWorldPos;
@@ -40,17 +41,18 @@ void main() {
   vec3 v = normalize(cameraPosition - vWorldPos);
   vec3 s = normalize(uSunDirection);
 
-  // BackSide outer shell grazing intensity: peaks cleanly along planetary silhouette horizon
+  // BackSide outer shell grazing intensity: peaks sharply along orbital planetary silhouette
   float ndotv = abs(dot(n, v));
-  float rim = pow(smoothstep(0.0, 0.30, ndotv), 1.65);
+  float rim = pow(smoothstep(0.0, 0.22, ndotv), 1.9);
 
   // Day/night solar terminator factor across globe limb
   float sunDot = dot(n, s);
   float dayTerm = smoothstep(-0.26, 0.38, sunDot);
   float sunsetBand = exp(-pow((sunDot + 0.02) / 0.22, 2.0));
 
-  // Fade in cleanly above 1.8 km so low-altitude SkyDome isn't double-brightened
-  float altFade = smoothstep(1800.0, 14000.0, uCameraAltitude);
+  // Fade in cleanly above lower atmosphere so low-altitude SkyDome isn't double-brightened
+  float atmoRef = max(20000.0, uAtmosphereTop);
+  float altFade = smoothstep(atmoRef * 0.14, atmoRef * 0.65, uCameraAltitude);
 
   vec3 col = mix(uAtmosphereColor, uHorizonColor, 0.45 + 0.4 * sunsetBand);
   float alpha = rim * (0.12 + 0.88 * dayTerm) * uStrength * altFade * 0.92;
@@ -77,6 +79,7 @@ export function createPlanetLimbMaterial(): THREE.ShaderMaterial {
       uHorizonColor: { value: new THREE.Color("#9ed8ff") },
       uStrength: { value: 1.0 },
       uCameraAltitude: { value: 0 },
+      uAtmosphereTop: { value: 120000 },
     },
   });
 }

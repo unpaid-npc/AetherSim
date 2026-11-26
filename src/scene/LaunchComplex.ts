@@ -1,6 +1,9 @@
 import * as THREE from "three";
+import { type LaunchSiteConfig, getDefaultLaunchSiteForPlanet } from "../config/launchSites";
 import type { PlanetConfig } from "../config/planets";
+import type { QualityPreset } from "../effects/PropulsionEffects";
 import { SeededNoise2D, computeSphereDrop, samplePlanetTerrainHeight } from "../utils/noise";
+import { loadPbrTextureSet } from "./PbrTextureLoader";
 import {
   type PbrTextureSet,
   disposeTextureSet,
@@ -25,22 +28,39 @@ export class LaunchComplex {
   public readonly group = new THREE.Group();
 
   private activeGroup = new THREE.Group();
+  private orbitalStationHost = new THREE.Group();
   private padTextures: PbrTextureSet | null = null;
   private disposables: Array<{ dispose(): void }> = [];
 
-  private padDeckY = 2.2;
-  private planetSimRadiusM = 67_790;
+  private padDeckY = 18.0;
+  private planetSimRadiusM = 6_371_000;
   private baseFocusTarget = new THREE.Vector3(0, 12, 0);
+  private loadSeq = 0;
+  private activeConfig: PlanetConfig;
+  private activeSite: LaunchSiteConfig;
 
   private qdArmPivot: THREE.Group | null = null;
   private catchCarriageGroup: THREE.Group | null = null;
   private chopstickLeftPivot: THREE.Group | null = null;
   private chopstickRightPivot: THREE.Group | null = null;
+  private tulipArmPivots: Array<{ pivot: THREE.Group; baseTilt: number }> = [];
   private orbitalAnim: OrbitalStationAnim | null = null;
 
-  constructor(initialConfig: PlanetConfig, maxAnisotropy: number) {
-    this.group.add(this.activeGroup);
-    this.updatePlanet(initialConfig, maxAnisotropy);
+  constructor(
+    initialConfig: PlanetConfig,
+    maxAnisotropy: number,
+    quality: QualityPreset = "med",
+    initialSite: LaunchSiteConfig = getDefaultLaunchSiteForPlanet(initialConfig.id)
+  ) {
+    this.activeConfig = initialConfig;
+    this.activeSite = initialSite;
+    this.group.add(this.activeGroup, this.orbitalStationHost);
+    this.updatePlanet(initialConfig, maxAnisotropy, quality, initialSite);
+  }
+
+  /** Strict scale-honest space culling: hides pad, tower, tanks & surface bases above 18 km. */
+  setVisibilityForCameraAltitude(camAltM: number): void {
+    this.activeGroup.visible = camAltM < 18_000;
   }
 
   getPadDeckY(): number {
@@ -49,6 +69,13 @@ export class LaunchComplex {
 
   getBaseFocusTarget(): THREE.Vector3 {
     return this.baseFocusTarget.clone();
+  }
+
+  getOrbitalStationWorldPosition(out = new THREE.Vector3()): THREE.Vector3 | null {
+    if (!this.orbitalAnim) {
+      return null;
+    }
+    return out.copy(this.orbitalAnim.group.position);
   }
 
   setUmbilicalRetracted(t: number): void {
@@ -60,13 +87,18 @@ export class LaunchComplex {
   }
 
   setCatchArmsOpen(open: number): void {
-    if (!this.chopstickLeftPivot || !this.chopstickRightPivot) {
-      return;
-    }
     const clamped = Math.max(0, Math.min(1, open));
-    const angle = 0.08 + clamped * 0.56;
-    this.chopstickLeftPivot.rotation.y = angle;
-    this.chopstickRightPivot.rotation.y = -angle;
+    if (this.chopstickLeftPivot && this.chopstickRightPivot) {
+      const angle = 0.08 + clamped * 0.56;
+      this.chopstickLeftPivot.rotation.y = angle;
+      this.chopstickRightPivot.rotation.y = -angle;
+    }
+    if (this.tulipArmPivots.length > 0) {
+      const openAngle = clamped * 0.85;
+      for (const arm of this.tulipArmPivots) {
+        arm.pivot.rotation.z = arm.baseTilt - openAngle;
+      }
+    }
   }
 
   setCatchCarriageHeight(yM: number): void {
@@ -99,23 +131,45 @@ export class LaunchComplex {
     }
   }
 
-  updatePlanet(config: PlanetConfig, maxAnisotropy: number): void {
+  getLaunchSite(): LaunchSiteConfig {
+    return this.activeSite;
+  }
+
+  setLaunchSite(
+    site: LaunchSiteConfig,
+    maxAnisotropy: number,
+    quality: QualityPreset = "med"
+  ): void {
+    this.activeSite = site;
+    this.updatePlanet(this.activeConfig, maxAnisotropy, quality, site);
+  }
+
+  updatePlanet(
+    config: PlanetConfig,
+    maxAnisotropy: number,
+    quality: QualityPreset = "med",
+    site: LaunchSiteConfig = getDefaultLaunchSiteForPlanet(config.id)
+  ): void {
     this.clearCurrent();
+    this.activeConfig = config;
+    this.activeSite = site;
     this.planetSimRadiusM = config.scale.simRadiusM;
+    const seq = ++this.loadSeq;
 
     this.activeGroup = new THREE.Group();
-    this.group.add(this.activeGroup);
+    this.orbitalStationHost = new THREE.Group();
+    this.group.add(this.activeGroup, this.orbitalStationHost);
 
     const padTex = generatePadConcreteTextureSet(config, maxAnisotropy);
     this.padTextures = padTex;
 
     const concreteMat = new THREE.MeshStandardMaterial({
-      color: "#ffffff",
+      color: "#d4d8dd",
       map: padTex.albedoMap,
       normalMap: padTex.normalMap,
       roughnessMap: padTex.roughnessMap,
-      roughness: 0.84,
-      metalness: 0.06,
+      roughness: 0.88,
+      metalness: 0.05,
     });
     const steelMat = new THREE.MeshStandardMaterial({
       color: "#4b5563",
@@ -123,14 +177,15 @@ export class LaunchComplex {
       roughness: 0.36,
     });
     const brightSteelMat = new THREE.MeshStandardMaterial({
-      color: "#cbd5e1",
-      metalness: 0.86,
-      roughness: 0.24,
+      color: "#bcc6d4",
+      metalness: 0.82,
+      roughness: 0.28,
     });
+    // Matte industrial tank paint capped below 0.88 luminance so tanks never over-bloom
     const whiteTankMat = new THREE.MeshStandardMaterial({
-      color: "#f1f5f9",
-      metalness: 0.18,
-      roughness: 0.38,
+      color: "#cdd4dc",
+      metalness: 0.14,
+      roughness: 0.54,
     });
     const goldSolarMat = new THREE.MeshStandardMaterial({
       color: "#c58f2a",
@@ -167,14 +222,24 @@ export class LaunchComplex {
     );
 
     if (config.id === "earth") {
-      this.buildEarthStarbase(
-        concreteMat,
-        steelMat,
-        brightSteelMat,
-        whiteTankMat,
-        goldSolarMat,
-        beaconOrangeMat
-      );
+      if (site.padStyle === "starbase_olm") {
+        this.buildEarthStarbase(
+          concreteMat,
+          steelMat,
+          brightSteelMat,
+          whiteTankMat,
+          beaconOrangeMat
+        );
+      } else {
+        this.buildEarthGlobalPad(
+          site,
+          concreteMat,
+          steelMat,
+          brightSteelMat,
+          whiteTankMat,
+          beaconOrangeMat
+        );
+      }
     } else if (config.id === "mars") {
       this.buildMarsSpaceport(
         config,
@@ -198,6 +263,18 @@ export class LaunchComplex {
         windowGlowMat
       );
     }
+
+    // Load real 4K Poly Haven PBR concrete maps asynchronously for authentic pad & OLM detail
+    void loadPbrTextureSet("concrete", 5, 5, maxAnisotropy, quality).then((pbr) => {
+      if (!pbr || seq !== this.loadSeq) {
+        return;
+      }
+      concreteMat.map = pbr.albedoMap;
+      concreteMat.normalMap = pbr.normalMap;
+      concreteMat.roughnessMap = pbr.roughnessMap;
+      concreteMat.needsUpdate = true;
+      this.disposables.push(pbr.albedoMap, pbr.normalMap, pbr.roughnessMap);
+    });
   }
 
   private trackGeom<T extends THREE.BufferGeometry>(geom: T): T {
@@ -210,7 +287,6 @@ export class LaunchComplex {
     steelMat: THREE.MeshStandardMaterial,
     brightSteelMat: THREE.MeshStandardMaterial,
     whiteTankMat: THREE.MeshStandardMaterial,
-    goldSolarMat: THREE.MeshStandardMaterial,
     beaconMat: THREE.MeshStandardMaterial
   ): void {
     this.padDeckY = 18.0;
@@ -240,6 +316,24 @@ export class LaunchComplex {
     flameTrench.receiveShadow = true;
     this.activeGroup.add(flameTrench);
 
+    // Subtle Raptor blast-scorch ring beneath OLM trench
+    const scorchMat = new THREE.MeshStandardMaterial({
+      color: "#1e2229",
+      roughness: 0.96,
+      metalness: 0.04,
+      transparent: true,
+      opacity: 0.58,
+      depthWrite: false,
+    });
+    this.disposables.push(scorchMat);
+    const scorchDecal = new THREE.Mesh(
+      this.trackGeom(new THREE.RingGeometry(12.5, 29.0, 36)),
+      scorchMat
+    );
+    scorchDecal.rotation.x = -Math.PI * 0.5;
+    scorchDecal.position.y = 0.09;
+    this.activeGroup.add(scorchDecal);
+
     // Elevated Orbital Launch Mount (OLM) table at y = 18.0m on 6 angled legs
     const olmRing = new THREE.Mesh(
       this.trackGeom(new THREE.CylinderGeometry(11.4, 12.6, 3.2, 18, 1, true)),
@@ -259,27 +353,31 @@ export class LaunchComplex {
     olmDeck.receiveShadow = true;
     this.activeGroup.add(olmDeck);
 
-    // 6 heavy angled concrete/steel blast legs
+    // 6 heavy angled concrete/steel blast legs (instanced to keep draw calls lean)
     const legGeom = this.trackGeom(new THREE.CylinderGeometry(1.5, 2.3, 18.4, 12));
+    const legsInst = new THREE.InstancedMesh(legGeom, concreteMat, 6);
+    legsInst.castShadow = true;
+    legsInst.receiveShadow = true;
+    const dummy = new THREE.Object3D();
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
-      const leg = new THREE.Mesh(legGeom, concreteMat);
-      leg.position.set(Math.cos(a) * 11.8, 8.6, Math.sin(a) * 11.8);
-      leg.rotation.z = Math.cos(a) * 0.22;
-      leg.rotation.x = -Math.sin(a) * 0.22;
-      leg.castShadow = true;
-      leg.receiveShadow = true;
-      this.activeGroup.add(leg);
+      dummy.position.set(Math.cos(a) * 11.8, 8.6, Math.sin(a) * 11.8);
+      dummy.rotation.set(-Math.sin(a) * 0.22, 0, Math.cos(a) * 0.22);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      legsInst.setMatrixAt(i, dummy.matrix);
     }
+    legsInst.instanceMatrix.needsUpdate = true;
+    this.activeGroup.add(legsInst);
 
     // 20 instanced hold-down clamps around OLM rim
     const clampGeom = this.trackGeom(new THREE.BoxGeometry(0.9, 1.4, 1.5));
     const clamps = new THREE.InstancedMesh(clampGeom, brightSteelMat, 20);
-    const dummy = new THREE.Object3D();
     for (let i = 0; i < 20; i++) {
       const a = (i / 20) * Math.PI * 2;
       dummy.position.set(Math.cos(a) * 5.2, 18.4, Math.sin(a) * 5.2);
       dummy.rotation.set(0, -a, 0);
+      dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       clamps.setMatrixAt(i, dummy.matrix);
     }
@@ -294,14 +392,20 @@ export class LaunchComplex {
     towerGroup.position.set(towerX, 0, 0);
 
     const colGeom = this.trackGeom(new THREE.BoxGeometry(1.4, towerH, 1.4));
+    const colsInst = new THREE.InstancedMesh(colGeom, steelMat, 4);
+    colsInst.castShadow = true;
+    let cIdx = 0;
     for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        const col = new THREE.Mesh(colGeom, steelMat);
-        col.position.set(sx * towerHalf, towerH * 0.5, sz * towerHalf);
-        col.castShadow = true;
-        towerGroup.add(col);
+        dummy.position.set(sx * towerHalf, towerH * 0.5, sz * towerHalf);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        colsInst.setMatrixAt(cIdx++, dummy.matrix);
       }
     }
+    colsInst.instanceMatrix.needsUpdate = true;
+    towerGroup.add(colsInst);
 
     // Instanced horizontal & cross-bracing tower lattice bays (18 levels x 4 faces)
     const bayH = towerH / 18;
@@ -383,19 +487,31 @@ export class LaunchComplex {
     farmGroup.position.set(74, 0, -14);
     const tankGeom = this.trackGeom(new THREE.CylinderGeometry(4.2, 4.2, 24, 20));
     const tankDomeGeom = this.trackGeom(new THREE.SphereGeometry(4.2, 20, 12));
+    const tankCylInst = new THREE.InstancedMesh(tankGeom, whiteTankMat, 6);
+    const tankDomeInst = new THREE.InstancedMesh(tankDomeGeom, whiteTankMat, 6);
+    tankCylInst.castShadow = true;
+    tankCylInst.receiveShadow = true;
+    let tIdx = 0;
     for (let row = 0; row < 2; row++) {
       for (let col = 0; col < 3; col++) {
         const tx = col * 12;
         const tz = row * 14;
-        const cyl = new THREE.Mesh(tankGeom, whiteTankMat);
-        cyl.position.set(tx, 12, tz);
-        cyl.castShadow = true;
-        cyl.receiveShadow = true;
-        const dome = new THREE.Mesh(tankDomeGeom, whiteTankMat);
-        dome.position.set(tx, 24, tz);
-        farmGroup.add(cyl, dome);
+        dummy.position.set(tx, 12, tz);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        tankCylInst.setMatrixAt(tIdx, dummy.matrix);
+
+        dummy.position.set(tx, 24, tz);
+        dummy.updateMatrix();
+        tankDomeInst.setMatrixAt(tIdx, dummy.matrix);
+        tIdx += 1;
       }
     }
+    tankCylInst.instanceMatrix.needsUpdate = true;
+    tankDomeInst.instanceMatrix.needsUpdate = true;
+    farmGroup.add(tankCylInst, tankDomeInst);
+
     const sphereTank = new THREE.Mesh(
       this.trackGeom(new THREE.SphereGeometry(7.2, 24, 16)),
       whiteTankMat
@@ -413,23 +529,257 @@ export class LaunchComplex {
     farmGroup.add(pipe);
     this.activeGroup.add(farmGroup);
 
-    // 4 Perimeter Stadium Floodlight Masts
+    // 4 Perimeter Stadium Floodlight Masts (instanced)
     const mastPoleGeom = this.trackGeom(new THREE.CylinderGeometry(0.35, 0.55, 34, 8));
     const floodHeadGeom = this.trackGeom(new THREE.BoxGeometry(3.2, 1.4, 0.9));
+    const floodPoleInst = new THREE.InstancedMesh(mastPoleGeom, steelMat, 4);
+    const floodHeadInst = new THREE.InstancedMesh(floodHeadGeom, beaconMat, 4);
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + Math.PI * 0.25;
       const mx = Math.cos(a) * 51;
       const mz = Math.sin(a) * 51;
-      const pole = new THREE.Mesh(mastPoleGeom, steelMat);
-      pole.position.set(mx, 17, mz);
-      const head = new THREE.Mesh(floodHeadGeom, beaconMat);
-      head.position.set(mx, 34.2, mz);
-      head.lookAt(0, 18, 0);
-      this.activeGroup.add(pole, head);
+      dummy.position.set(mx, 17, mz);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      floodPoleInst.setMatrixAt(i, dummy.matrix);
+
+      dummy.position.set(mx, 34.2, mz);
+      dummy.lookAt(0, 18, 0);
+      dummy.updateMatrix();
+      floodHeadInst.setMatrixAt(i, dummy.matrix);
+    }
+    floodPoleInst.instanceMatrix.needsUpdate = true;
+    floodHeadInst.instanceMatrix.needsUpdate = true;
+    this.activeGroup.add(floodPoleInst, floodHeadInst);
+  }
+
+  private buildEarthGlobalPad(
+    site: LaunchSiteConfig,
+    concreteMat: THREE.MeshStandardMaterial,
+    steelMat: THREE.MeshStandardMaterial,
+    brightSteelMat: THREE.MeshStandardMaterial,
+    whiteTankMat: THREE.MeshStandardMaterial,
+    beaconMat: THREE.MeshStandardMaterial
+  ): void {
+    const padDeckHeights: Record<string, number> = {
+      ksc_fss_ramp: 12.0,
+      shar_umbilical: 8.5,
+      kourou_gantry: 9.0,
+      tanegashima_bluff: 10.0,
+      baikonur_tulip: 6.5,
+    };
+    const deckY = padDeckHeights[site.padStyle] ?? 9.0;
+    this.padDeckY = deckY;
+    this.baseFocusTarget.set(175, 16, -65);
+
+    const earth = this.activeConfig;
+    const noise = new SeededNoise2D(earth.terrain.seed);
+    const gPad = samplePlanetTerrainHeight(0, 0, earth, noise, site);
+
+    // Reinforced octagonal launch apron + flame trench ramp
+    const apron = new THREE.Mesh(
+      this.trackGeom(new THREE.CylinderGeometry(42, 48, deckY + 2.0, 8)),
+      concreteMat
+    );
+    apron.position.set(0, gPad + (deckY - 2.0) * 0.5, 0);
+    apron.receiveShadow = true;
+    this.activeGroup.add(apron);
+
+    // Steel launch table ring & flame deflector trench
+    const tableRing = new THREE.Mesh(
+      this.trackGeom(new THREE.CylinderGeometry(11.5, 13.0, 2.2, 16)),
+      steelMat
+    );
+    tableRing.position.set(0, deckY - 1.1, 0);
+    tableRing.castShadow = true;
+    tableRing.receiveShadow = true;
+    this.activeGroup.add(tableRing);
+
+    const flameTrench = new THREE.Mesh(
+      this.trackGeom(new THREE.BoxGeometry(58, 2.8, 12.5)),
+      steelMat
+    );
+    flameTrench.position.set(8, Math.max(gPad + 1.4, deckY - 3.6), 0);
+    flameTrench.receiveShadow = true;
+    this.activeGroup.add(flameTrench);
+
+    const deflector = new THREE.Mesh(
+      this.trackGeom(new THREE.ConeGeometry(8.5, 4.2, 4)),
+      steelMat
+    );
+    deflector.position.set(0, Math.max(gPad + 2.1, deckY - 3.8), 0);
+    deflector.rotation.y = Math.PI * 0.25;
+    this.activeGroup.add(deflector);
+
+    const beaconGeom = this.trackGeom(new THREE.SphereGeometry(0.65, 8, 8));
+
+    if (site.padStyle === "baikonur_tulip") {
+      // Classic Soviet-era Baikonur Soyuz/Proton tulip truss launch stand
+      const armAngles = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+      this.tulipArmPivots = [];
+      for (const ang of armAngles) {
+        const pivot = new THREE.Group();
+        pivot.position.set(Math.cos(ang) * 9.5, deckY, Math.sin(ang) * 9.5);
+        pivot.rotation.y = -ang;
+        const baseTilt = 0.08;
+        pivot.rotation.z = baseTilt;
+
+        const armBeam = new THREE.Mesh(
+          this.trackGeom(new THREE.BoxGeometry(2.6, 28, 3.2)),
+          brightSteelMat
+        );
+        armBeam.position.set(0, 14, 0);
+        armBeam.castShadow = true;
+        pivot.add(armBeam);
+
+        const clampHead = new THREE.Mesh(
+          this.trackGeom(new THREE.BoxGeometry(4.2, 2.4, 2.8)),
+          steelMat
+        );
+        clampHead.position.set(-1.8, 25.5, 0);
+        pivot.add(clampHead);
+
+        this.tulipArmPivots.push({ pivot, baseTilt });
+        this.activeGroup.add(pivot);
+      }
+
+      // Rail-mounted umbilical & cabling mast
+      const mast = new THREE.Mesh(
+        this.trackGeom(new THREE.BoxGeometry(5.5, 58, 5.5)),
+        brightSteelMat
+      );
+      mast.position.set(-22, gPad + 29, 0);
+      mast.castShadow = true;
+      this.activeGroup.add(mast);
+
+      this.qdArmPivot = new THREE.Group();
+      this.qdArmPivot.position.set(-19, 36, 0);
+      const qdArm = new THREE.Mesh(
+        this.trackGeom(new THREE.BoxGeometry(14, 2.0, 2.4)),
+        steelMat
+      );
+      qdArm.position.set(7, 0, 0);
+      this.qdArmPivot.add(qdArm);
+      this.activeGroup.add(this.qdArmPivot);
+
+      const b = new THREE.Mesh(beaconGeom, beaconMat);
+      b.position.set(-22, gPad + 59, 0);
+      this.activeGroup.add(b);
+    } else {
+      // Tall Fixed Service Structure (FSS) / Umbilical Tower + swing arm + lightning masts
+      const isKsc = site.padStyle === "ksc_fss_ramp";
+      const isShar = site.padStyle === "shar_umbilical";
+      const isKourou = site.padStyle === "kourou_gantry";
+      const towerH = isKsc ? 108 : isKourou ? 82 : 76;
+      const towerX = -24;
+
+      const towerMat = isShar || isKourou ? brightSteelMat : steelMat;
+      const tower = new THREE.Mesh(
+        this.trackGeom(new THREE.BoxGeometry(11.5, towerH, 11.5)),
+        towerMat
+      );
+      tower.position.set(towerX, deckY + towerH * 0.5, 0);
+      tower.castShadow = true;
+      tower.receiveShadow = true;
+      this.activeGroup.add(tower);
+
+      // Exterior structural ribs & elevator shaft contrast
+      const ribGeom = this.trackGeom(new THREE.BoxGeometry(12.2, 1.1, 12.2));
+      for (let ry = deckY + 12; ry < deckY + towerH - 4; ry += 14) {
+        const rib = new THREE.Mesh(ribGeom, isKsc ? brightSteelMat : steelMat);
+        rib.position.set(towerX, ry, 0);
+        this.activeGroup.add(rib);
+      }
+
+      // Crew access / umbilical swing arm
+      this.qdArmPivot = new THREE.Group();
+      this.qdArmPivot.position.set(towerX + 5.5, deckY + Math.min(towerH - 12, 58), 0);
+      const armLen = isKsc ? 18 : 15;
+      const swingArm = new THREE.Mesh(
+        this.trackGeom(new THREE.BoxGeometry(armLen, 2.6, 3.4)),
+        isKsc ? whiteTankMat : brightSteelMat
+      );
+      swingArm.position.set(armLen * 0.5, 0, 0);
+      swingArm.castShadow = true;
+      this.qdArmPivot.add(swingArm);
+      this.activeGroup.add(this.qdArmPivot);
+
+      // Mobile service structure / acoustic water-deluge tank next to apron
+      const waterTank = new THREE.Mesh(
+        this.trackGeom(new THREE.CylinderGeometry(5.8, 5.8, 22, 16)),
+        whiteTankMat
+      );
+      waterTank.position.set(-34, gPad + 11, 24);
+      waterTank.castShadow = true;
+      this.activeGroup.add(waterTank);
+
+      // 4 perimeter lightning protection towers
+      const mastGeom = this.trackGeom(new THREE.CylinderGeometry(0.45, 1.35, 86, 8));
+      const mastOffsets: Array<[number, number]> = [
+        [-48, -48],
+        [48, -48],
+        [-48, 48],
+        [48, 48],
+      ];
+      for (const [mx, mz] of mastOffsets) {
+        const gy = samplePlanetTerrainHeight(mx, mz, earth, noise, site);
+        const mast = new THREE.Mesh(mastGeom, brightSteelMat);
+        mast.position.set(mx, gy + 43, mz);
+        mast.castShadow = true;
+        const b = new THREE.Mesh(beaconGeom, beaconMat);
+        b.position.set(mx, gy + 86.5, mz);
+        this.activeGroup.add(mast, b);
+      }
+
+      const topBeacon = new THREE.Mesh(beaconGeom, beaconMat);
+      topBeacon.position.set(towerX, deckY + towerH + 1.5, 0);
+      this.activeGroup.add(topBeacon);
     }
 
-    // ISS-inspired LEO Orbital Space Station
-    this.buildOrbitalStation("earth", brightSteelMat, goldSolarMat, whiteTankMat);
+    // Dual spherical cryogenic LOX / LH2 storage spheres set back West of pad
+    const sphereGeom = this.trackGeom(new THREE.SphereGeometry(7.2, 18, 14));
+    for (const [sx, sz] of [
+      [-68, -28],
+      [-68, 28],
+    ] as Array<[number, number]>) {
+      const gy = samplePlanetTerrainHeight(sx, sz, earth, noise, site);
+      const sph = new THREE.Mesh(sphereGeom, whiteTankMat);
+      sph.position.set(sx, gy + 9.5, sz);
+      sph.castShadow = true;
+      sph.receiveShadow = true;
+      const plinth = new THREE.Mesh(
+        this.trackGeom(new THREE.CylinderGeometry(5.5, 6.2, 4.5, 12)),
+        concreteMat
+      );
+      plinth.position.set(sx, gy + 2.25, sz);
+      this.activeGroup.add(sph, plinth);
+    }
+
+    // Perimeter pad floodlight poles
+    const floodPoleGeom = this.trackGeom(new THREE.CylinderGeometry(0.28, 0.42, 34, 6));
+    const floodHeadGeom = this.trackGeom(new THREE.BoxGeometry(2.6, 1.1, 1.4));
+    const floodPoleInst = new THREE.InstancedMesh(floodPoleGeom, steelMat, 6);
+    const floodHeadInst = new THREE.InstancedMesh(floodHeadGeom, beaconMat, 6);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      const mx = Math.cos(ang) * 62;
+      const mz = Math.sin(ang) * 62;
+      const gy = samplePlanetTerrainHeight(mx, mz, earth, noise, site);
+      dummy.position.set(mx, gy + 17, mz);
+      dummy.rotation.set(0, -ang, 0);
+      dummy.updateMatrix();
+      floodPoleInst.setMatrixAt(i, dummy.matrix);
+
+      dummy.position.set(mx, gy + 34.2, mz);
+      dummy.lookAt(0, deckY + 12, 0);
+      dummy.updateMatrix();
+      floodHeadInst.setMatrixAt(i, dummy.matrix);
+    }
+    floodPoleInst.instanceMatrix.needsUpdate = true;
+    floodHeadInst.instanceMatrix.needsUpdate = true;
+    this.activeGroup.add(floodPoleInst, floodHeadInst);
   }
 
   private buildMarsSpaceport(
@@ -590,9 +940,6 @@ export class LaunchComplex {
     dish.rotation.x = Math.PI * 0.72;
     habGroup.add(dishPole, dish);
     this.activeGroup.add(habGroup);
-
-    // Mars Orbital Transfer Station
-    this.buildOrbitalStation("mars", brightSteelMat, solarMat, whiteTankMat);
   }
 
   private buildMoonSpaceport(
@@ -728,99 +1075,10 @@ export class LaunchComplex {
     depot.position.set(-18, 5, 12);
     outpost.add(rad, depot);
     this.activeGroup.add(outpost);
-
-    // Lunar Gateway Orbital Space Station
-    this.buildOrbitalStation("moon", brightSteelMat, goldSolarMat, whiteTankMat);
-  }
-
-  private buildOrbitalStation(
-    planetId: "earth" | "mars" | "moon",
-    trussMat: THREE.MeshStandardMaterial,
-    solarMat: THREE.MeshStandardMaterial,
-    habMat: THREE.MeshStandardMaterial
-  ): void {
-    const station = new THREE.Group();
-    // Large visible scale at high sky altitude (~1350..1650m) so it clearly glides overhead
-    const scale = planetId === "earth" ? 2.6 : 2.3;
-    station.scale.setScalar(scale);
-
-    // Main central truss
-    const truss = new THREE.Mesh(
-      this.trackGeom(new THREE.BoxGeometry(44, 1.6, 1.6)),
-      trussMat
-    );
-    station.add(truss);
-
-    // Pressurized habitation / docking spine
-    const spine = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(2.1, 2.1, 20, 12)),
-      habMat
-    );
-    spine.rotation.x = Math.PI * 0.5;
-    station.add(spine);
-
-    if (planetId === "mars") {
-      // Mars Transfer Station centrifugal ring
-      const ring = new THREE.Mesh(
-        this.trackGeom(new THREE.TorusGeometry(9.5, 1.0, 10, 28)),
-        habMat
-      );
-      station.add(ring);
-    }
-
-    // Instanced solar wings
-    const wingGeom = this.trackGeom(new THREE.BoxGeometry(5.2, 0.16, 16.5));
-    const wingCount = planetId === "earth" ? 8 : 4;
-    const wings = new THREE.InstancedMesh(wingGeom, solarMat, wingCount);
-    const dummy = new THREE.Object3D();
-    let idx = 0;
-    const xs = planetId === "earth" ? [-19, -13, 13, 19] : [-16, 16];
-    for (const wx of xs) {
-      for (const sz of [-1, 1]) {
-        dummy.position.set(wx, 0, sz * 10.5);
-        dummy.rotation.set(0.25, 0, 0);
-        dummy.updateMatrix();
-        wings.setMatrixAt(idx++, dummy.matrix);
-      }
-    }
-    wings.instanceMatrix.needsUpdate = true;
-    station.add(wings);
-
-    // Navigation strobes (no shadow casting on distant orbital station)
-    const strobeGeom = this.trackGeom(new THREE.SphereGeometry(0.9, 8, 8));
-    const strobeMatRed = new THREE.MeshStandardMaterial({
-      color: "#fecaca",
-      emissive: "#ef4444",
-      emissiveIntensity: 2.0,
-    });
-    const strobeMatWhite = new THREE.MeshStandardMaterial({
-      color: "#f8fafc",
-      emissive: "#e0f2fe",
-      emissiveIntensity: 2.0,
-    });
-    this.disposables.push(strobeMatRed, strobeMatWhite);
-
-    const s1 = new THREE.Mesh(strobeGeom, strobeMatRed);
-    s1.position.set(-22, 1.8, 0);
-    const s2 = new THREE.Mesh(strobeGeom, strobeMatWhite);
-    s2.position.set(22, 1.8, 0);
-    station.add(s1, s2);
-
-    this.activeGroup.add(station);
-    this.orbitalAnim = {
-      group: station,
-      strobes: [s1, s2],
-      radiusX: planetId === "earth" ? 2100 : 1950,
-      radiusZ: planetId === "earth" ? 1750 : 1650,
-      altitudeY: planetId === "earth" ? 2400 : planetId === "mars" ? 1900 : 1600,
-      angularSpeed: 0.024,
-      phaseOffset: planetId === "mars" ? 0.55 : planetId === "earth" ? 0.85 : 0.4,
-    };
-    this.update(0);
   }
 
   private clearCurrent(): void {
-    this.group.remove(this.activeGroup);
+    this.group.remove(this.activeGroup, this.orbitalStationHost);
     for (const item of this.disposables) {
       item.dispose();
     }
@@ -831,6 +1089,7 @@ export class LaunchComplex {
     this.catchCarriageGroup = null;
     this.chopstickLeftPivot = null;
     this.chopstickRightPivot = null;
+    this.tulipArmPivots = [];
     this.orbitalAnim = null;
   }
 

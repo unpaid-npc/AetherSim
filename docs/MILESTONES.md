@@ -1,6 +1,6 @@
 # AetherSim — Milestones & Git Branching Convention
 
-This document defines the repository's Git workflow and tracks progress across **Milestones 0–4** (Phase A Desktop Simulator) and **Phases B/C** (14-Module Ecosystem Expansion).
+This document defines the repository's Git workflow and tracks progress across **Milestones 0–6** (Phase A Desktop Simulator, `v0.1.0` → `v2.0.0`) and **Phases B/C** (14-Module Ecosystem Expansion).
 
 ---
 
@@ -153,6 +153,32 @@ This document defines the repository's Git workflow and tracks progress across *
 
 ---
 
-### Phase B & Phase C — 14-Module Ecosystem Horizon (Post-`v1.0`) — **PLANNED ARCHITECTURE**
+### Milestone 6 — Earth-First `v2.0.0` Experience, True `1:1` Scale, Global Spaceports, Rocket Fleet, Live SGP4 Satellites & Polish (`v2.0.0`) — **COMPLETE & VERIFIED**
+- **Branch:** `milestone/m6-earth-experience-v2`
+- **Implemented Scope:**
+  - **Stage 6A (Studio Design System & Earth-First Modular HUD):**
+    - Refactored monolithic HUD into modular aerospace UI components (`src/ui/`, `src/styles/tokens.css`, `src/styles/components.css`) with high-contrast dark obsidian glass, tabular-numeral gauges, radial webcast telemetry dials, keyboard shortcuts (`1/2/3` Earth-first), and OS + manual `Reduced Motion` support.
+  - **Stage 6B + 1:1 Scale & `F1–F8` Camera Overhaul:**
+    - Upgraded from `1:50` miniature scale to **True `1:1` Real-Scale Planetary Physics & Geometry** (`Earth R = 6,371 km`, `Mars R = 3,389.5 km`, `Moon R = 1,737.4 km`, `120 km` Earth atmosphere, `200 km` LEO @ `~7,780 m/s`, `1x–50x` Time Warp) using Float64 camera-relative floating-origin rendering.
+    - Built living coastal launch environments (`CoastalEnvironment.ts`, `oceanShader.ts`, `EarthTileOverlay.ts`, `PbrTextureLoader.ts`) with bundled 4K Poly Haven CC0 PBR materials and progressive 10m EOX Sentinel-2 / NASA GIBS regional satellite tile rings.
+    - Rebuilt `CameraDirector.ts` with authoritative synchronous `F1–F8` state transitions, live Three.js matrix vehicle framing for both Ship & Booster, zero plume-blindness, and Electron keyboard capture-phase support.
+  - **Stage 6C (6 Global Earth Launch Sites & 4 Selectable 3D Rockets):**
+    - Added 6 geographically located Earth launch complexes (`src/config/launchSites.ts`): **Starbase Boca Chica**, **Kennedy Space Center LC-39A**, **Satish Dhawan Space Centre SHAR (Sriharikota)**, **Guiana Space Centre (Kourou)**, **Tanegashima Space Center**, and **Baikonur Cosmodrome Site 1** (inland arid steppe with `hasOcean: false` and articulated tulip stand).
+    - Added 4 distinct procedural PBR 3D rockets (`src/config/vehicles.ts`, `src/scene/RocketFleetBuilder.ts`): **Starship + Super Heavy** (RTLS catch), **Falcon 9 Block 5** (folding carbon landing legs + RTLS landing), **ISRO LVM3** (twin S200 solid strap-on booster separation + L110 + C25), and **NASA Saturn V** (S-IC roll pattern, 5× F-1, 5× J-2, Apollo CSM/LES).
+  - **Stage 6D (Explorable Satellites, ISS, Ground Tracks & Live CelesTrak SGP4):**
+    - Integrated `satellite.js` (`7.2.0`) and `CelesTrakService.ts` (targeted OMM/GP JSON endpoints, 2-hour `localStorage` cache, 5s timeout, 15s manual refresh limit, offline fallback) with 13 curated Earth orbital objects (**ISS (ZARYA)**, **Tiangong**, **Hubble**, **Sentinel-2A**, **NOAA-20**, **GPS III SV01**, **GOES-16**, and a 6-unit **Starlink Demo Train**) plus simulated **Moon** (`Lunar Gateway`, `LRO`) and **Mars** (`Mars Transfer Station`, `MRO`) orbiters.
+    - Built `OrbitalObjectManager.ts` (detailed modular 3D ISS & spacecraft meshes, 1-draw-call instanced space beacons, closed inertial 3D orbital rings, ±1-orbit Earth surface ground tracks at `R + 1,800 m`, nadir line, planet-occluded click-to-select picking) and `OrbitalDrawer.ts` inspector UI with close-up 3D inspection (`CameraDirector.focusOrbitalObject`).
+  - **Stage 6E (Responsive/ARIA Polish, Auto-Quality Guard, `v2.0.0` Benchmarks, Profiling & Packaging):**
+    - Added multi-viewport responsive breakpoints (`<= 1360px`, `<= 1280px`, `<= 1024px`, `max-height: 768px`), mutually exclusive drawer coordination (`uiGuards.ts`), layered `Escape` dismissal, full ARIA attributes (`aria-label`, `aria-pressed`, `aria-expanded`, `aria-valuenow`, `aria-hidden`), GSAP reduced-motion parity, and an optional **`Auto Quality Guard`** (`HIGH → MED → LOW` on sustained `< 32 FPS` for `4 s`).
+    - Refreshed `v2.0.0` benchmarks (`results/v2_benchmark.json`, `results/v2_benchmark.csv`, `docs/BENCHMARKS.md`), desktop GPU profiling (`results/v2_performance_profile.json`, `docs/PERFORMANCE_REPORT.md`), docs, and Windows x64 portable executable (`release/AetherSim-2.0.0-win-x64-portable.exe`).
+- **Verification Gate Results (`v2.0.0`):**
+  - `npm run test`: **12 test files, 49 tests passed (`0` failures)** (`planets`, `noise`, `planetScale`, `earthCoastline`, `uiArchitecture`, `cameraDirector`, `launchSitesAndFleet`, `orbitalCatalog`, `orbitalMechanics`, `flightController`, `researchWorkbench`, `ppoAI`).
+  - `npm run build`: **`tsc --noEmit && vite build` passed (`0` errors)** across `98` modules.
+  - `npm run benchmark`: Completed in `34,867 ms` (`pid_baseline` `100.0%` nominal landing on Mars/Earth/Moon; `ppo_trained` `100.0%` nominal on Earth, `70.0%` on Mars, `75.0%` on Moon).
+  - `npm run profile:desktop`: **`PROFILE_OK`**, `0` errors, `0` warnings (`106–142` draw calls, `33.5 MB` JS heap across Earth/Mars/Moon at `1426×779`).
+
+---
+
+### Phase B & Phase C — 14-Module Ecosystem Horizon (Post-`v2.0`) — **PLANNED ARCHITECTURE**
 - **Phase B (Co-Simulation & Expanded Physics):** Spherical rotating-planet N-body orbital propagator, FMI 3.0 / FMU and OMG DDS interfaces, Mars-GRAM/US76 wind & thermal/TPS models, EKF navigation + convex powered-descent guidance, independent IIP corridor / AFSS monitor, and UQ-bounded PINN aerodynamic surrogates.
 - **Phase C (HIL FlatSat & Research Benchmarks):** Deterministic RTOS/FPGA HIL FlatSat bridge with hardware bus emulation, closed-loop ECLSS models, and exploratory offline quantum/QAOA trajectory-optimization benchmarks compared against classical convex solvers.

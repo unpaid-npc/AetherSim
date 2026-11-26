@@ -1,11 +1,11 @@
-# AetherSim v1.0.0 — Desktop GPU & FPS Performance Report
+# AetherSim v2.0.0 — Desktop GPU & FPS Performance Report
 
-Measured directly inside the built Electron desktop application via `npm run profile:desktop` ([scripts/profile-desktop.mjs](../scripts/profile-desktop.mjs)), with raw frame telemetry saved in [results/v1_performance_profile.json](../results/v1_performance_profile.json).
+Measured directly inside the built Electron desktop application via `npm run profile:desktop` ([scripts/profile-desktop.mjs](../scripts/profile-desktop.mjs)), with raw frame telemetry saved in [results/v2_performance_profile.json](../results/v2_performance_profile.json).
 
 ---
 
 ## Test Environment & Hardware Scope
-- **Measured At (UTC):** `2026-11-25T06:13:28.646Z`
+- **Measured At (UTC):** `2026-11-26T06:06:48.992Z`
 - **OS / Architecture:** `Windows_NT 10.0.26300 (x64)`
 - **CPU:** `AMD Ryzen 5 5600H with Radeon Graphics` (`12` logical cores)
 - **System Memory:** `7.3 GB`
@@ -22,15 +22,15 @@ Measured directly inside the built Electron desktop application via `npm run pro
 
 | Planet | Quality | Avg FPS | p50 Frame (ms) | p95 Frame (ms) | Draw Calls | Triangles | JS Heap (MB) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MARS** | `LOW` | **60.3** | 16.70 ms | 17.10 ms | 108 | 62,744 | 20.7 MB |
-| **MARS** | `MED` | **60.0** | 16.70 ms | 17.10 ms | 123 | 62,759 | 20.7 MB |
-| **MARS** | `HIGH` | **60.1** | 16.70 ms | 17.10 ms | 123 | 62,759 | 20.7 MB |
-| **EARTH** | `LOW` | **60.2** | 16.70 ms | 17.20 ms | 153 | 68,228 | 20.7 MB |
-| **EARTH** | `MED` | **60.3** | 16.70 ms | 17.00 ms | 168 | 68,243 | 20.7 MB |
-| **EARTH** | `HIGH` | **60.1** | 16.70 ms | 16.90 ms | 168 | 68,243 | 20.7 MB |
-| **MOON** | `LOW` | **60.2** | 16.70 ms | 17.10 ms | 124 | 61,692 | 20.7 MB |
-| **MOON** | `MED` | **57.1** | 16.70 ms | 32.40 ms | 139 | 61,707 | 20.7 MB |
-| **MOON** | `HIGH` | **60.2** | 16.70 ms | 17.00 ms | 139 | 61,707 | 20.7 MB |
+| **MARS** | `LOW` | **58.9** | 16.70 ms | 17.10 ms | 106 | 85,220 | 33.5 MB |
+| **MARS** | `MED` | **53.5** | 16.70 ms | 33.20 ms | 120 | 111,474 | 33.5 MB |
+| **MARS** | `HIGH` | **31.7** | 33.30 ms | 50.00 ms | 120 | 147,954 | 33.5 MB |
+| **EARTH** | `LOW` | **45.1** | 16.70 ms | 50.80 ms | 128 | 96,330 | 33.5 MB |
+| **EARTH** | `MED` | **25.9** | 33.30 ms | 99.60 ms | 142 | 129,190 | 33.5 MB |
+| **EARTH** | `HIGH` | **23.3** | 49.80 ms | 50.60 ms | 142 | 165,670 | 33.5 MB |
+| **MOON** | `LOW` | **53.1** | 16.70 ms | 17.00 ms | 109 | 83,768 | 33.5 MB |
+| **MOON** | `MED` | **42.2** | 16.80 ms | 33.50 ms | 123 | 110,022 | 33.5 MB |
+| **MOON** | `HIGH` | **35.3** | 33.20 ms | 33.60 ms | 123 | 146,502 | 33.5 MB |
 
 ---
 

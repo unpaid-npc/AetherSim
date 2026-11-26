@@ -1,0 +1,107 @@
+:root {
+  color-scheme: dark;
+
+  /* Offline-safe geometric & tabular typography stacks (zero external requests / CSP-compliant) */
+  --font-display: "Bahnschrift", "DIN Alternate", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+
+  /* Obsidian glass surfaces engineered for >= 7:1 contrast over bright daytime Earth skies */
+  --bg-void: #05070d;
+  --surface-glass: rgba(8, 12, 20, 0.78);
+  --surface-glass-strong: rgba(7, 11, 18, 0.90);
+  --surface-elevated: rgba(15, 23, 38, 0.86);
+  --surface-hover: rgba(30, 44, 68, 0.84);
+  --surface-well: rgba(6, 10, 18, 0.88);
+
+  --border-subtle: rgba(164, 194, 230, 0.16);
+  --border-rim: rgba(196, 220, 255, 0.26);
+  --border-active: rgba(56, 189, 248, 0.78);
+
+  /* High-contrast foreground scale */
+  --text-primary: #f4f8fd;
+  --text-secondary: #c5d4e6;
+  --text-muted: #93a7c0;
+
+  /* Purposeful semantic accents */
+  --accent: #38bdf8;
+  --accent-soft: rgba(56, 189, 248, 0.18);
+  --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.16);
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.18);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.18);
+  --orange: #fb923c;
+  --orange-soft: rgba(251, 146, 60, 0.18);
+  --violet: #c084fc;
+  --violet-soft: rgba(192, 132, 252, 0.18);
+
+  /* 4px spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Border radius scale */
+  --radius-xs: 5px;
+  --radius-sm: 7px;
+  --radius-md: 11px;
+  --radius-lg: 15px;
+  --radius-pill: 999px;
+
+  /* Elevation & rim lighting */
+  --shadow-glass: 0 14px 36px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --shadow-popover: 0 20px 48px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --blur-glass: blur(14px);
+
+  /* Strict z-index layers */
+  --z-hud: 10;
+  --z-dock: 15;
+  --z-drawer: 20;
+  --z-topbar: 25;
+  --z-popover: 30;
+  --z-toast: 35;
+  --z-modal: 45;
+
+  /* Motion timing & curves */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 140ms;
+  --dur-med: 200ms;
+  --dur-drawer: 240ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-med: 0ms;
+    --dur-drawer: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
+html[data-reduced-motion="true"] {
+  --dur-fast: 0ms;
+  --dur-med: 0ms;
+  --dur-drawer: 0ms;
+}
+
+html[data-reduced-motion="true"] *,
+html[data-reduced-motion="true"] *::before,
+html[data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  transition-delay: 0ms !important;
+}
