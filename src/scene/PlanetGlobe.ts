@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import {
+  EARTH_LAUNCH_SITES,
+  type LaunchSiteId,
+} from "../config/launchSites";
 import type { PlanetConfig } from "../config/planets";
 import type { QualityPreset } from "../effects/PropulsionEffects";
 import {
@@ -6,7 +10,10 @@ import {
   createPlanetSurfaceMaterial,
 } from "../shaders/planetGlobeShader";
 import { createPlanetLimbMaterial } from "../shaders/planetLimbShader";
-import { computeLaunchSiteZenithQuaternion } from "./earthGeography";
+import {
+  computeLaunchSiteZenithQuaternion,
+  geoToSphereUnitVector,
+} from "./earthGeography";
 import {
   type PlanetGlobeTextureSet,
   disposeGlobeTextureSet,
@@ -50,6 +57,12 @@ export class PlanetGlobe {
   private readonly limbMat: THREE.ShaderMaterial;
   private limbMesh: THREE.Mesh | null = null;
 
+  private readonly sitePinsGroup = new THREE.Group();
+  private sitePinGeo: THREE.SphereGeometry | null = null;
+  private sitePinMat: THREE.MeshBasicMaterial | null = null;
+  private sitePinsInst: THREE.InstancedMesh | null = null;
+  private activeSiteId: LaunchSiteId = "starbase";
+
   private placeholderTextures: PlanetGlobeTextureSet | null = null;
   private activeConfig: PlanetConfig;
   private activeQuality: QualityPreset = "med";
@@ -71,6 +84,7 @@ export class PlanetGlobe {
     this.limbMat = createPlanetLimbMaterial();
 
     this.globeCenterGroup.add(this.zenithAlignedGroup);
+    this.zenithAlignedGroup.add(this.sitePinsGroup);
     this.group.add(this.globeCenterGroup);
     this.rebuild(initialConfig, quality, maxAnisotropy);
   }
@@ -121,8 +135,8 @@ export class PlanetGlobe {
     const surfDetail = getIcosaDetail(quality, true);
     const auxDetail = getIcosaDetail(quality, false);
 
-    // Gentle -35m cap recess beneath local terrain so feathered outer rim blends without seams
-    this.surfaceGeo = new THREE.IcosahedronGeometry(Math.max(1000, R - 35), surfDetail);
+    // -1800m cap recess + cutout keeps 6,371 km icosahedron facets strictly below local terrain & Sentinel-2 rings
+    this.surfaceGeo = new THREE.IcosahedronGeometry(Math.max(1000, R - 1800), surfDetail);
     this.surfaceMat.uniforms.uSunDirection.value.copy(sunVec);
     this.surfaceMat.uniforms.uSunColor.value.set(config.lighting.sunLightColor);
     this.surfaceMat.uniforms.uSunIntensity.value = config.lighting.sunLightIntensity;
@@ -133,6 +147,11 @@ export class PlanetGlobe {
     this.surfaceMat.uniforms.uIsMoon.value = config.id === "moon" ? 1.0 : 0.0;
     this.surfaceMat.uniforms.uMicroDetailStrength.value = config.id === "moon" ? 0.11 : 0.085;
     this.surfaceMat.uniforms.uNightOpacity.value = 0.0;
+    this.surfaceMat.uniforms.uLocalTerrainCutoutRadius.value = Math.min(
+      9500,
+      config.scale.localTerrainRadiusM * 0.34
+    );
+    this.surfaceMat.uniforms.uSimRadius.value = R;
 
     this.applySurfaceTextures(placeholder);
     this.onSiteColorSampled?.(getDefaultSiteTintColor(config.id));
@@ -143,7 +162,7 @@ export class PlanetGlobe {
     this.zenithAlignedGroup.add(this.surfaceMesh);
 
     if (config.id === "earth") {
-      this.cloudGeo = new THREE.IcosahedronGeometry(R + 2400, auxDetail);
+      this.cloudGeo = new THREE.IcosahedronGeometry(R + 12_000, auxDetail);
       this.cloudMat.uniforms.uSunDirection.value.copy(sunVec);
       this.cloudMat.uniforms.uSunColor.value.set(config.lighting.sunLightColor);
       this.cloudMat.uniforms.uSunIntensity.value = config.lighting.sunLightIntensity;
@@ -155,8 +174,8 @@ export class PlanetGlobe {
     }
 
     if (config.id !== "moon") {
-      const limbMult = config.id === "earth" ? 1.045 : 1.03;
-      this.limbGeo = new THREE.IcosahedronGeometry(R * limbMult, auxDetail);
+      const limbRadius = R + Math.max(20_000, config.scale.atmosphereTopM);
+      this.limbGeo = new THREE.IcosahedronGeometry(limbRadius, auxDetail);
       (this.limbMat.uniforms.uSunDirection.value as THREE.Vector3).copy(sunVec);
       (this.limbMat.uniforms.uAtmosphereColor.value as THREE.Color).set(
         config.id === "earth" ? "#4ca8ff" : "#df864d"
@@ -165,6 +184,7 @@ export class PlanetGlobe {
         config.id === "earth" ? "#9ed8ff" : "#f2b07a"
       );
       this.limbMat.uniforms.uStrength.value = config.id === "earth" ? 1.0 : 0.72;
+      this.limbMat.uniforms.uAtmosphereTop.value = config.scale.atmosphereTopM;
       this.limbMesh = new THREE.Mesh(this.limbGeo, this.limbMat);
       this.limbMesh.renderOrder = 3;
       this.zenithAlignedGroup.add(this.limbMesh);
@@ -177,6 +197,84 @@ export class PlanetGlobe {
       }
       this.applySurfaceTextures(bundle);
     });
+
+    this.rebuildSitePins(R);
+  }
+
+  private rebuildSitePins(R: number): void {
+    if (this.sitePinsInst) {
+      this.sitePinsGroup.remove(this.sitePinsInst);
+      this.sitePinsInst.dispose();
+      this.sitePinsInst = null;
+    }
+    this.sitePinGeo?.dispose();
+    this.sitePinMat?.dispose();
+    this.sitePinGeo = null;
+    this.sitePinMat = null;
+
+    if (this.activeConfig.id !== "earth") {
+      this.sitePinsGroup.visible = false;
+      return;
+    }
+
+    const pinRadius = Math.max(24_000, R * 0.0085);
+    this.sitePinGeo = new THREE.SphereGeometry(pinRadius, 12, 8);
+    this.sitePinMat = new THREE.MeshBasicMaterial({
+      color: "#ffffff",
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+    });
+    this.sitePinsInst = new THREE.InstancedMesh(
+      this.sitePinGeo,
+      this.sitePinMat,
+      EARTH_LAUNCH_SITES.length
+    );
+    this.sitePinsInst.renderOrder = 6;
+    const dummy = new THREE.Object3D();
+    const activeCol = new THREE.Color("#fbbf24");
+    const otherCol = new THREE.Color("#38bdf8");
+    const pinAltR = R + 18_000;
+
+    EARTH_LAUNCH_SITES.forEach((s, i) => {
+      const [ux, uy, uz] = geoToSphereUnitVector(s.latDeg, s.lonDeg);
+      dummy.position.set(ux * pinAltR, uy * pinAltR, uz * pinAltR);
+      dummy.scale.setScalar(s.id === this.activeSiteId ? 1.45 : 0.9);
+      dummy.updateMatrix();
+      this.sitePinsInst!.setMatrixAt(i, dummy.matrix);
+      this.sitePinsInst!.setColorAt(i, s.id === this.activeSiteId ? activeCol : otherCol);
+    });
+    this.sitePinsInst.instanceMatrix.needsUpdate = true;
+    if (this.sitePinsInst.instanceColor) {
+      this.sitePinsInst.instanceColor.needsUpdate = true;
+    }
+    this.sitePinsGroup.add(this.sitePinsInst);
+    this.sitePinsGroup.visible = false;
+  }
+
+  setLaunchSite(siteId: LaunchSiteId, latDeg: number, lonDeg: number): void {
+    this.activeSiteId = siteId;
+    const q = computeLaunchSiteZenithQuaternion(latDeg, lonDeg);
+    this.zenithAlignedGroup.quaternion.copy(q);
+
+    if (this.sitePinsInst && this.activeConfig.id === "earth") {
+      const dummy = new THREE.Object3D();
+      const activeCol = new THREE.Color("#fbbf24");
+      const otherCol = new THREE.Color("#38bdf8");
+      const pinAltR = this.activeConfig.scale.simRadiusM + 18_000;
+      EARTH_LAUNCH_SITES.forEach((s, i) => {
+        const [ux, uy, uz] = geoToSphereUnitVector(s.latDeg, s.lonDeg);
+        dummy.position.set(ux * pinAltR, uy * pinAltR, uz * pinAltR);
+        dummy.scale.setScalar(s.id === siteId ? 1.45 : 0.9);
+        dummy.updateMatrix();
+        this.sitePinsInst!.setMatrixAt(i, dummy.matrix);
+        this.sitePinsInst!.setColorAt(i, s.id === siteId ? activeCol : otherCol);
+      });
+      this.sitePinsInst.instanceMatrix.needsUpdate = true;
+      if (this.sitePinsInst.instanceColor) {
+        this.sitePinsInst.instanceColor.needsUpdate = true;
+      }
+    }
   }
 
   updatePlanet(config: PlanetConfig, quality: QualityPreset, maxAnisotropy: number): void {
@@ -190,26 +288,39 @@ export class PlanetGlobe {
     this.rebuild(this.activeConfig, quality, maxAnisotropy);
   }
 
+  setRenderOrigin(origin: { readonly x: number; readonly y: number; readonly z: number }): void {
+    const R = this.activeConfig.scale.simRadiusM;
+    this.globeCenterGroup.position.set(-origin.x, -R - origin.y, -origin.z);
+    (this.surfaceMat.uniforms.uPadRenderPos.value as THREE.Vector3).set(
+      -origin.x,
+      -origin.y,
+      -origin.z
+    );
+  }
+
   update(dt: number, cameraAltitudeM: number): void {
     this.surfaceMat.uniforms.uCameraAltitude.value = cameraAltitudeM;
 
     if (this.activeConfig.id === "earth") {
-      const nightT = Math.max(0, Math.min(1, (cameraAltitudeM - 2500) / 15500));
+      const nightT = Math.max(0, Math.min(1, (cameraAltitudeM - 15000) / 55000));
       this.surfaceMat.uniforms.uNightOpacity.value = nightT * 0.95;
+      this.sitePinsGroup.visible = cameraAltitudeM > 80_000;
+    } else {
+      this.sitePinsGroup.visible = false;
     }
 
     if (this.cloudMesh) {
-      this.cloudMesh.rotation.y += dt * 0.0045;
-      // Keep clouds strictly hidden below 4.5 km, then ramp smoothly up to 16 km
-      const t = Math.max(0, Math.min(1, (cameraAltitudeM - 4500) / 11500));
+      this.cloudMesh.rotation.y += dt * 0.0022;
+      // Keep global orbital cloud deck hidden near beach, fade smoothly in across 14..40 km
+      const t = Math.max(0, Math.min(1, (cameraAltitudeM - 14000) / 26000));
       const cloudT = t * t * (3 - 2 * t);
-      this.cloudMat.uniforms.uOpacity.value = cloudT * 0.86;
+      this.cloudMat.uniforms.uOpacity.value = cloudT * 0.84;
       this.cloudMesh.visible = cloudT > 0.004;
     }
 
     if (this.limbMesh) {
       this.limbMat.uniforms.uCameraAltitude.value = cameraAltitudeM;
-      this.limbMesh.visible = cameraAltitudeM > 1500;
+      this.limbMesh.visible = cameraAltitudeM > 14000;
     }
   }
 
@@ -236,6 +347,15 @@ export class PlanetGlobe {
 
   dispose(): void {
     this.clearGeometries();
+    if (this.sitePinsInst) {
+      this.sitePinsGroup.remove(this.sitePinsInst);
+      this.sitePinsInst.dispose();
+      this.sitePinsInst = null;
+    }
+    this.sitePinGeo?.dispose();
+    this.sitePinMat?.dispose();
+    this.sitePinGeo = null;
+    this.sitePinMat = null;
     disposeGlobeTextureSet(this.placeholderTextures);
     this.placeholderTextures = null;
     this.surfaceMat.dispose();

@@ -46,10 +46,10 @@ const SchlierenHeatShader = {
   `,
 };
 
-/** Manages UnrealBloom + Schlieren heat distortion with WebGL2 4x MSAA HalfFloat target. */
+/** Manages UnrealBloom + Schlieren heat distortion with quality-scaled WebGL2 RT & half-res MED bloom. */
 export class PostProcessingPipeline {
   private readonly renderer: THREE.WebGLRenderer;
-  private readonly renderTarget: THREE.WebGLRenderTarget;
+  private renderTarget: THREE.WebGLRenderTarget;
   private readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
   private readonly bloomPass: UnrealBloomPass;
@@ -57,6 +57,10 @@ export class PostProcessingPipeline {
   private readonly outputPass: OutputPass;
 
   private quality: QualityPreset = "med";
+  private width: number;
+  private height: number;
+  private pixelRatio = 1;
+  private currentSamples = 0;
 
   constructor(
     renderer: THREE.WebGLRenderer,
@@ -66,22 +70,27 @@ export class PostProcessingPipeline {
     height: number
   ) {
     this.renderer = renderer;
+    this.width = Math.max(1, width);
+    this.height = Math.max(1, height);
     this.renderTarget = new THREE.WebGLRenderTarget(
-      Math.max(1, width),
-      Math.max(1, height),
+      this.width,
+      this.height,
       {
         type: THREE.HalfFloatType,
-        samples: 4,
+        samples: 0,
       }
     );
     this.composer = new EffectComposer(renderer, this.renderTarget);
 
     this.renderPass = new RenderPass(scene, camera);
     this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(width, height),
-      0.42,
-      0.55,
-      0.92
+      new THREE.Vector2(
+        Math.max(1, Math.floor(this.width * 0.5)),
+        Math.max(1, Math.floor(this.height * 0.5))
+      ),
+      0.34,
+      0.45,
+      1.2
     );
     this.schlierenPass = new ShaderPass(SchlierenHeatShader);
     this.outputPass = new OutputPass();
@@ -93,30 +102,64 @@ export class PostProcessingPipeline {
     this.setQuality("med");
   }
 
+  private ensureTargetSamples(samples: number): void {
+    if (this.currentSamples === samples) {
+      return;
+    }
+    this.currentSamples = samples;
+    const rtW = Math.max(1, Math.floor(this.width * this.pixelRatio));
+    const rtH = Math.max(1, Math.floor(this.height * this.pixelRatio));
+    const nextTarget = new THREE.WebGLRenderTarget(rtW, rtH, {
+      type: THREE.HalfFloatType,
+      samples,
+    });
+    this.renderTarget = nextTarget;
+    // EffectComposer.reset() disposes previous renderTarget1/renderTarget2 internally
+    this.composer.reset(nextTarget);
+  }
+
+  private applyBloomResolution(): void {
+    const scale = this.quality === "high" ? 1.0 : 0.5;
+    this.bloomPass.resolution.set(
+      Math.max(1, Math.floor(this.width * scale)),
+      Math.max(1, Math.floor(this.height * scale))
+    );
+  }
+
   setQuality(quality: QualityPreset): void {
     this.quality = quality;
     if (quality === "med") {
-      this.renderTarget.samples = 4;
-      this.bloomPass.strength = 0.42;
-      this.bloomPass.radius = 0.55;
-      this.bloomPass.threshold = 0.92;
+      this.ensureTargetSamples(0);
+      this.bloomPass.strength = 0.34;
+      this.bloomPass.radius = 0.45;
+      this.bloomPass.threshold = 1.2;
       this.schlierenPass.enabled = true;
+      this.applyBloomResolution();
     } else if (quality === "high") {
-      this.renderTarget.samples = 4;
-      this.bloomPass.strength = 0.52;
-      this.bloomPass.radius = 0.62;
-      this.bloomPass.threshold = 0.88;
+      this.ensureTargetSamples(4);
+      this.bloomPass.strength = 0.44;
+      this.bloomPass.radius = 0.55;
+      this.bloomPass.threshold = 1.15;
       this.schlierenPass.enabled = true;
+      this.applyBloomResolution();
     }
   }
 
   setSize(width: number, height: number, pixelRatio: number): void {
+    this.width = Math.max(1, width);
+    this.height = Math.max(1, height);
+    this.pixelRatio = pixelRatio;
     this.composer.setPixelRatio(pixelRatio);
-    this.composer.setSize(width, height);
-    this.bloomPass.resolution.set(width, height);
+    this.composer.setSize(this.width, this.height);
+    this.applyBloomResolution();
   }
 
   setSchlierenState(elapsedSec: number, nozzleUvX: number, nozzleUvY: number, intensity: number): void {
+    const active = this.quality !== "low" && intensity > 0.005;
+    this.schlierenPass.enabled = active;
+    if (!active) {
+      return;
+    }
     this.schlierenPass.uniforms.uTime.value = elapsedSec;
     (this.schlierenPass.uniforms.uNozzleUv.value as THREE.Vector2).set(nozzleUvX, nozzleUvY);
     this.schlierenPass.uniforms.uIntensity.value = intensity;

@@ -1,4 +1,17 @@
+import {
+  type LaunchSiteConfig,
+  type LaunchSiteId,
+  getDefaultLaunchSiteForPlanet,
+  getLaunchSiteConfig,
+} from "../config/launchSites";
 import { type PlanetConfig, type PlanetId, getPlanetConfig } from "../config/planets";
+import {
+  DEFAULT_VEHICLE_ID,
+  type VehicleConfig,
+  type VehicleId,
+  getVehicleConfig,
+  getVehicleLaunchProfile,
+} from "../config/vehicles";
 import { PAD_FLAT_RADIUS_M, SeededNoise2D, samplePlanetTerrainHeight, smoothstep } from "../utils/noise";
 import {
   type FaultConfig,
@@ -16,15 +29,46 @@ import {
 
 export type MissionMode = "launch" | "landing";
 export type ControlMode = "ai_ppo" | "autopilot" | "manual";
-export type TimeWarp = 1 | 2 | 5 | 10;
+export type TimeWarp = 1 | 2 | 5 | 10 | 25 | 50;
+export type AtmosphericLayer =
+  | "TROPOSPHERE"
+  | "STRATOSPHERE"
+  | "MESOSPHERE"
+  | "KARMAN LINE"
+  | "LEO SPACE"
+  | "THIN CO2"
+  | "ORBIT SPACE"
+  | "VACUUM";
+
+export function classifyAtmosphericLayer(
+  planetId: PlanetId,
+  altitudeM: number
+): AtmosphericLayer {
+  if (planetId === "moon") {
+    return "VACUUM";
+  }
+  if (planetId === "mars") {
+    if (altitudeM < 45_000) return "THIN CO2";
+    if (altitudeM < 90_000) return "MESOSPHERE";
+    return "ORBIT SPACE";
+  }
+  if (altitudeM < 12_000) return "TROPOSPHERE";
+  if (altitudeM < 50_000) return "STRATOSPHERE";
+  if (altitudeM < 85_000) return "MESOSPHERE";
+  if (altitudeM < 100_000) return "KARMAN LINE";
+  return "LEO SPACE";
+}
 
 export interface OrbitalTelemetry {
   apoapsisAltM: number;
   periapsisAltM: number;
+  apoapsisKm: number;
+  periapsisKm: number;
   eccentricity: number;
   circularVelocityMps: number;
   orbitalSpeedMps: number;
   orbitalPeriodS: number | null;
+  orbitalPeriodMin: number | null;
   timeToApoapsisS: number | null;
   targetOrbitAltM: number;
   isBoundOrbit: boolean;
@@ -120,7 +164,20 @@ export type BoosterStatus =
   | "BOOSTER_LANDING_BURN"
   | "BOOSTER_CAUGHT"
   | "BOOSTER_LANDED"
+  | "BOOSTER_EXPENDED"
   | "BOOSTER_CRASHED";
+
+export interface SideBoosterPairState {
+  active: boolean;
+  leftPos: { x: number; y: number; z: number };
+  rightPos: { x: number; y: number; z: number };
+  leftVel: { x: number; y: number; z: number };
+  rightVel: { x: number; y: number; z: number };
+  pitch: number;
+  yaw: number;
+  roll: number;
+  spinAngle: number;
+}
 
 export interface BoosterState {
   active: boolean;
@@ -137,6 +194,7 @@ export interface BoosterState {
   padOffsetM: number;
   gridFinPitch: number;
   gridFinYaw: number;
+  landingLegsDeployed?: number;
   touchdownVerticalSpeedMps: number | null;
   touchdownOffsetM: number | null;
   impactEvent: CrashEvent | null;
@@ -144,6 +202,8 @@ export interface BoosterState {
 
 export interface FlightTelemetry {
   planetId: PlanetId;
+  launchSiteId: LaunchSiteId;
+  vehicleId: VehicleId;
   missionMode: MissionMode;
   controlMode: ControlMode;
   phase: FlightPhase;
@@ -155,6 +215,10 @@ export interface FlightTelemetry {
   padDeckY: number;
   surfaceHeightM: number;
   altitudeM: number;
+  altitudeKm: number;
+  downrangeKm: number;
+  karmanLineCrossed: boolean;
+  atmosphericLayer: AtmosphericLayer;
   speedMps: number;
   speedKmh: number;
   verticalSpeedMps: number;
@@ -165,8 +229,10 @@ export interface FlightTelemetry {
   throttle: number;
   boosterThrottle: number;
   shipThrottle: number;
+  sideBoosterThrottle: number;
   boosterFuel: number;
   shipFuel: number;
+  sideBoosterFuel: number;
   frostLevel: number;
   umbilicalRetracted: number;
   catchArmsOpen: number;
@@ -177,6 +243,7 @@ export interface FlightTelemetry {
   landingLegsDeployed: number;
   targetLandingLegs: number;
   stageSeparated: boolean;
+  sideBoostersSeparated: boolean;
   gimbalX: number;
   gimbalZ: number;
   position: { x: number; y: number; z: number };
@@ -187,6 +254,7 @@ export interface FlightTelemetry {
   angularVelocity: { pitch: number; yaw: number; roll: number };
   rcsThrust: { pitch: number; yaw: number; roll: number };
   booster: BoosterState;
+  sideBoosters: SideBoosterPairState;
   landingVerdict: LandingVerdict;
   crashEvent: CrashEvent | null;
   touchdownVerticalSpeedMps: number | null;
@@ -200,57 +268,8 @@ export interface FlightTelemetry {
 const FIXED_DT = 1 / 60;
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
-const STACK_DRY_AND_WET_MASS_KG = 1_600_000;
-const SHIP_MASS_KG = 240_000;
-const BOOSTER_RTLS_RESERVE_FUEL = 0.18;
-const BOOSTER_RTLS_MAX_ACCEL = 32.0;
-const BOOSTER_RTLS_BURN_RATE = 0.0042;
 const BOOSTER_CATCH_CARRIAGE_LAUNCH_Y = 108.0;
 const BOOSTER_CATCH_CARRIAGE_CATCH_Y = 83.4;
-
-interface FirstStageProfile {
-  readonly maxAccel: number;
-  readonly netClimbLow: number;
-  readonly netClimbMaxQ: number;
-  readonly netClimbHigh: number;
-  readonly climbSwitchAltM: number;
-  readonly burnRate: number;
-  readonly maxTurnRad: number;
-}
-
-function getFirstStageProfile(planetId: PlanetId): FirstStageProfile {
-  if (planetId === "earth") {
-    return {
-      maxAccel: 34.0,
-      netClimbLow: 11.5,
-      netClimbMaxQ: 8.5,
-      netClimbHigh: 19.2,
-      climbSwitchAltM: 400,
-      burnRate: 0.0268,
-      maxTurnRad: 0.74,
-    };
-  }
-  if (planetId === "mars") {
-    return {
-      maxAccel: 22.0,
-      netClimbLow: 8.2,
-      netClimbMaxQ: 8.2,
-      netClimbHigh: 9.8,
-      climbSwitchAltM: 550,
-      burnRate: 0.0365,
-      maxTurnRad: 0.72,
-    };
-  }
-  return {
-    maxAccel: 22.0,
-    netClimbLow: 6.4,
-    netClimbMaxQ: 6.4,
-    netClimbHigh: 4.3,
-    climbSwitchAltM: 420,
-    burnRate: 0.078,
-    maxTurnRad: 0.70,
-  };
-}
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -286,6 +305,8 @@ function approachAngle(current: number, target: number, maxDelta: number): numbe
  */
 export class FlightController {
   private planet: PlanetConfig;
+  private site: LaunchSiteConfig;
+  private vehicle: VehicleConfig;
   private terrainNoise: SeededNoise2D;
   private padDeckY: number;
   private missionMode: MissionMode;
@@ -314,9 +335,12 @@ export class FlightController {
   private throttle = 0;
   private boosterThrottle = 0;
   private shipThrottle = 0;
+  private sideBoosterThrottle = 0;
   private boosterFuel = 1.0;
   private shipFuel = 1.0;
+  private sideBoosterFuel = 1.0;
   private stageSeparated = false;
+  private sideBoostersSeparated = false;
 
   private frostLevel = 1.0;
   private umbilicalRetracted = 0.0;
@@ -353,9 +377,22 @@ export class FlightController {
     padOffsetM: 0,
     gridFinPitch: 0,
     gridFinYaw: 0,
+    landingLegsDeployed: 0,
     touchdownVerticalSpeedMps: null,
     touchdownOffsetM: null,
     impactEvent: null,
+  };
+
+  private sideBoosters: SideBoosterPairState = {
+    active: false,
+    leftPos: { x: 0, y: 0, z: 0 },
+    rightPos: { x: 0, y: 0, z: 0 },
+    leftVel: { x: 0, y: 0, z: 0 },
+    rightVel: { x: 0, y: 0, z: 0 },
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    spinAngle: 0,
   };
 
   private landingVerdict: LandingVerdict = "NONE";
@@ -370,13 +407,36 @@ export class FlightController {
   constructor(
     planetId: PlanetId = "mars",
     padDeckY = 2.2,
-    initialMode: MissionMode = "launch"
+    initialMode: MissionMode = "launch",
+    vehicleId: VehicleId = DEFAULT_VEHICLE_ID,
+    launchSiteId?: LaunchSiteId
   ) {
     this.planet = getPlanetConfig(planetId);
+    this.site = launchSiteId
+      ? getLaunchSiteConfig(launchSiteId)
+      : getDefaultLaunchSiteForPlanet(planetId);
+    this.vehicle = getVehicleConfig(vehicleId);
     this.terrainNoise = new SeededNoise2D(this.planet.terrain.seed);
     this.padDeckY = padDeckY;
     this.missionMode = initialMode;
-    this.reset(planetId, padDeckY, initialMode);
+    this.reset(planetId, padDeckY, initialMode, this.vehicle.id, this.site.id);
+  }
+
+  setVehicle(vehicleId: VehicleId, resetMission = true): void {
+    this.vehicle = getVehicleConfig(vehicleId);
+    if (resetMission) {
+      const targetMode =
+        !this.vehicle.supportsLandingMode && this.missionMode === "landing"
+          ? "launch"
+          : this.missionMode;
+      this.reset(this.planet.id, this.padDeckY, targetMode, this.vehicle.id, this.site.id);
+    }
+  }
+
+  setLaunchSite(siteId: LaunchSiteId, padDeckY: number): void {
+    const nextSite = getLaunchSiteConfig(siteId);
+    this.site = nextSite;
+    this.reset(nextSite.planetId, padDeckY, this.missionMode, this.vehicle.id, nextSite.id);
   }
 
   setFaultConfig(cfg: Partial<FaultConfig>): void {
@@ -404,9 +464,18 @@ export class FlightController {
   reset(
     planetId: PlanetId = this.planet.id,
     padDeckY: number = this.padDeckY,
-    missionMode: MissionMode = this.missionMode
+    missionMode: MissionMode = this.missionMode,
+    vehicleId: VehicleId = this.vehicle.id,
+    launchSiteId?: LaunchSiteId
   ): void {
     this.planet = getPlanetConfig(planetId);
+    this.vehicle = getVehicleConfig(vehicleId);
+    const resolvedSite = launchSiteId
+      ? getLaunchSiteConfig(launchSiteId)
+      : this.site.planetId === planetId
+        ? this.site
+        : getDefaultLaunchSiteForPlanet(planetId);
+    this.site = resolvedSite;
     this.terrainNoise = new SeededNoise2D(this.planet.terrain.seed);
     this.padDeckY = padDeckY;
     this.missionMode = missionMode;
@@ -425,6 +494,7 @@ export class FlightController {
     this.throttle = 0;
     this.boosterThrottle = 0;
     this.shipThrottle = 0;
+    this.sideBoosterThrottle = 0;
     this.gimbalX = 0;
     this.gimbalZ = 0;
     this.gridFinPitch = 0;
@@ -446,6 +516,18 @@ export class FlightController {
     this.boosterFlipTimerSec = 0;
     this.catchCarriageY = BOOSTER_CATCH_CARRIAGE_LAUNCH_Y;
 
+    this.sideBoosters = {
+      active: false,
+      leftPos: { x: 0, y: padDeckY, z: -3.6 },
+      rightPos: { x: 0, y: padDeckY, z: 3.6 },
+      leftVel: { x: 0, y: 0, z: 0 },
+      rightVel: { x: 0, y: 0, z: 0 },
+      pitch: 0,
+      yaw: 0,
+      roll: 0,
+      spinAngle: 0,
+    };
+
     if (missionMode === "launch") {
       this.phase = "PRELAUNCH";
       this.hasLiftedOff = false;
@@ -455,7 +537,9 @@ export class FlightController {
       this.roll = 0;
       this.boosterFuel = 1.0;
       this.shipFuel = 1.0;
+      this.sideBoosterFuel = this.vehicle.hasSideBoosters ? 1.0 : 0.0;
       this.stageSeparated = false;
+      this.sideBoostersSeparated = !this.vehicle.hasSideBoosters;
       this.frostLevel = 1.0;
       this.umbilicalRetracted = 0.0;
       this.catchArmsOpen = 0.18;
@@ -477,6 +561,7 @@ export class FlightController {
         padOffsetM: 0,
         gridFinPitch: 0,
         gridFinYaw: 0,
+        landingLegsDeployed: 0,
         touchdownVerticalSpeedMps: null,
         touchdownOffsetM: null,
         impactEvent: null,
@@ -489,7 +574,9 @@ export class FlightController {
       this.vel = { x: -7.5, y: -34, z: -2.2 };
       this.boosterFuel = 0.0;
       this.shipFuel = 0.72;
+      this.sideBoosterFuel = 0.0;
       this.stageSeparated = true;
+      this.sideBoostersSeparated = true;
       this.frostLevel = 0.25;
       this.umbilicalRetracted = 1.0;
       this.catchArmsOpen = 0.85;
@@ -508,6 +595,7 @@ export class FlightController {
         padOffsetM: 0,
         gridFinPitch: 0,
         gridFinYaw: 0,
+        landingLegsDeployed: 0,
         touchdownVerticalSpeedMps: null,
         touchdownOffsetM: null,
         impactEvent: null,
@@ -576,6 +664,51 @@ export class FlightController {
     this.targetLandingLegs = this.targetLandingLegs > 0.5 ? 0.0 : 1.0;
   }
 
+  triggerSideBoosterSeparation(): boolean {
+    if (
+      this.missionMode !== "launch" ||
+      !this.vehicle.hasSideBoosters ||
+      this.sideBoostersSeparated ||
+      this.phase === "PRELAUNCH" ||
+      this.phase === "COUNTDOWN" ||
+      this.isTerminalPhase()
+    ) {
+      return false;
+    }
+    this.sideBoostersSeparated = true;
+    this.sideBoosterThrottle = 0;
+
+    const R = this.planet.scale.simRadiusM;
+    const rx = this.pos.x;
+    const ry = this.pos.y + R;
+    const rz = this.pos.z;
+    const rMag = Math.max(1, Math.hypot(rx, ry, rz));
+    const ux = rx / rMag;
+    const uy = ry / rMag;
+    const uz = rz / rMag;
+
+    this.sideBoosters = {
+      active: true,
+      leftPos: { x: this.pos.x, y: this.pos.y, z: this.pos.z - 3.6 },
+      rightPos: { x: this.pos.x, y: this.pos.y, z: this.pos.z + 3.6 },
+      leftVel: {
+        x: this.vel.x - 4.0 * ux,
+        y: this.vel.y - 4.0 * uy,
+        z: this.vel.z - 6.5 - 4.0 * uz,
+      },
+      rightVel: {
+        x: this.vel.x - 4.0 * ux,
+        y: this.vel.y - 4.0 * uy,
+        z: this.vel.z + 6.5 - 4.0 * uz,
+      },
+      pitch: this.pitch,
+      yaw: this.yaw,
+      roll: this.roll,
+      spinAngle: 0,
+    };
+    return true;
+  }
+
   triggerStageSeparation(): boolean {
     if (
       this.missionMode !== "launch" ||
@@ -585,6 +718,9 @@ export class FlightController {
       this.isTerminalPhase()
     ) {
       return false;
+    }
+    if (this.vehicle.hasSideBoosters && !this.sideBoostersSeparated) {
+      this.triggerSideBoosterSeparation();
     }
     this.stageSeparated = true;
     this.phase = "STAGE_SEP";
@@ -609,7 +745,7 @@ export class FlightController {
 
     this.booster = {
       active: true,
-      status: "BOOSTER_FLIP",
+      status: this.vehicle.rtlsCapable ? "BOOSTER_FLIP" : "BOOSTER_EXPENDED",
       position: { ...this.pos },
       velocity: {
         x: this.vel.x - 1.5 * ex - 5.0 * ux,
@@ -626,6 +762,7 @@ export class FlightController {
       padOffsetM: Math.hypot(this.pos.x, this.pos.z),
       gridFinPitch: 0,
       gridFinYaw: 0,
+      landingLegsDeployed: 0,
       touchdownVerticalSpeedMps: null,
       touchdownOffsetM: null,
       impactEvent: null,
@@ -633,10 +770,12 @@ export class FlightController {
 
     const sinP = Math.sin(this.pitch);
     const cosP = Math.cos(this.pitch);
-    this.pos.x += sinP * 71;
-    this.pos.y += cosP * Math.cos(this.roll) * 71;
-    this.pos.z += cosP * Math.sin(this.roll) * 71;
+    const stageH = this.vehicle.stage1HeightM;
+    this.pos.x += sinP * stageH;
+    this.pos.y += cosP * Math.cos(this.roll) * stageH;
+    this.pos.z += cosP * Math.sin(this.roll) * stageH;
     this.boosterThrottle = 0;
+    this.sideBoosterThrottle = 0;
     return true;
   }
 
@@ -649,7 +788,7 @@ export class FlightController {
     if (this.running && !this.paused && !this.isTerminalPhase()) {
       this.accumulator += safeDt;
       let steps = 0;
-      while (this.accumulator >= FIXED_DT && steps < 64) {
+      while (this.accumulator >= FIXED_DT && steps < 240) {
         this.stepFixed(FIXED_DT, manualInput, aiAction);
         this.accumulator -= FIXED_DT;
         steps += 1;
@@ -750,7 +889,16 @@ export class FlightController {
 
   private getTowerSpec(): { x: number; height: number } {
     if (this.planet.id === "earth") {
-      return { x: -23, height: 145 };
+      if (this.site.padStyle === "starbase_olm") {
+        return { x: -23, height: 145 };
+      }
+      if (this.site.padStyle === "ksc_fss_ramp") {
+        return { x: -26, height: 112 };
+      }
+      if (this.site.padStyle === "baikonur_tulip") {
+        return { x: -28, height: 55 };
+      }
+      return { x: -24, height: 85 };
     }
     if (this.planet.id === "mars") {
       return { x: -19, height: 84 };
@@ -767,7 +915,7 @@ export class FlightController {
     if (r <= PAD_FLAT_RADIUS_M) {
       return 0;
     }
-    return samplePlanetTerrainHeight(x, z, this.planet, this.terrainNoise);
+    return samplePlanetTerrainHeight(x, z, this.planet, this.terrainNoise, this.site);
   }
 
   /** Returns surface radius from planet center (0, -R, 0), matching pad/terrain near zenith and R globally. */
@@ -886,7 +1034,42 @@ export class FlightController {
       this.evaluateHazardAndSurfaceContact();
     }
 
+    this.stepSideBoosters(dt);
     this.stepDetachedBooster(dt);
+  }
+
+  private stepSideBoosters(dt: number): void {
+    const sb = this.sideBoosters;
+    if (!sb.active) {
+      return;
+    }
+    const g0 = this.planet.physics.gravityMps2;
+    const R = this.planet.scale.simRadiusM;
+    const mu = computeGravitationalParameter(g0, R);
+
+    sb.spinAngle += dt * 0.45;
+    sb.pitch = approachAngle(sb.pitch, Math.PI * 0.65, dt * 0.25);
+
+    const stepOne = (pos: { x: number; y: number; z: number }, vel: { x: number; y: number; z: number }): boolean => {
+      const rx = pos.x;
+      const ry = pos.y + R;
+      const rz = pos.z;
+      const rMag = Math.max(1, Math.hypot(rx, ry, rz));
+      const invR3 = -mu / (rMag * rMag * rMag);
+      vel.x += rx * invR3 * dt;
+      vel.y += ry * invR3 * dt;
+      vel.z += rz * invR3 * dt;
+      pos.x += vel.x * dt;
+      pos.y += vel.y * dt;
+      pos.z += vel.z * dt;
+      return Math.hypot(pos.x, pos.y + R, pos.z) > R;
+    };
+
+    const leftAlive = stepOne(sb.leftPos, sb.leftVel);
+    const rightAlive = stepOne(sb.rightPos, sb.rightVel);
+    if (!leftAlive && !rightAlive) {
+      sb.active = false;
+    }
   }
 
   private stepDetachedBooster(dt: number): void {
@@ -911,17 +1094,44 @@ export class FlightController {
     const bAlt = Math.max(0, rMag - surfaceR);
     const vRad = b.velocity.x * ux + b.velocity.y * uy + b.velocity.z * uz;
     const bRho = this.sampleAirDensity(bAlt);
-    const bSpeed = Math.hypot(b.velocity.x, b.velocity.y, b.velocity.z);
-    const padOffset = Math.hypot(b.position.x, b.position.z);
+    const prof = getVehicleLaunchProfile(this.vehicle.id, this.planet.id);
+    const bPropMassKg = Math.max(0, b.fuel * prof.boosterPropKg);
+    const bMassKg = prof.boosterRtlsDryKg + bPropMassKg;
+    const maxRtlsAccel = prof.boosterRtlsMaxAccel;
+
+    // Surface great-circle arc range back to pad (0, padDeckY, 0)
+    const padAngle = Math.atan2(Math.hypot(rx, rz), Math.max(1, ry));
+    const padOffset = R * padAngle;
 
     b.altitudeM = bAlt;
     b.verticalSpeedMps = vRad;
     b.padOffsetM = padOffset;
 
-    const hPad = Math.max(10, b.position.y - this.padDeckY);
+    if (b.status === "BOOSTER_EXPENDED") {
+      b.throttle = 0;
+      b.gridFinPitch = 0;
+      b.gridFinYaw = 0;
+      const bSpeed = Math.hypot(b.velocity.x, b.velocity.y, b.velocity.z);
+      const dragDecel = bRho > 0 ? 0.00018 * bRho * bSpeed : 0;
+      const gravFac = -mu / (rMag * rMag * rMag);
+      b.velocity.x += (rx * gravFac - dragDecel * b.velocity.x) * dt;
+      b.velocity.y += (ry * gravFac - dragDecel * b.velocity.y) * dt;
+      b.velocity.z += (rz * gravFac - dragDecel * b.velocity.z) * dt;
+      b.position.x += b.velocity.x * dt;
+      b.position.y += b.velocity.y * dt;
+      b.position.z += b.velocity.z * dt;
+      const nextR = Math.hypot(b.position.x, b.position.y + R, b.position.z);
+      if (nextR <= R) {
+        b.active = false;
+        b.velocity = { x: 0, y: 0, z: 0 };
+        b.altitudeM = 0;
+      }
+      return;
+    }
+
+    const hPad = Math.max(10, bAlt);
     const tFlight =
-      (b.velocity.y +
-        Math.sqrt(Math.max(0, b.velocity.y * b.velocity.y + 2 * gEff * hPad))) /
+      (vRad + Math.sqrt(Math.max(0, vRad * vRad + 2 * gEff * hPad))) /
       Math.max(0.5, gEff);
 
     let targetThrottle = 0;
@@ -932,26 +1142,24 @@ export class FlightController {
 
     if (b.status === "BOOSTER_FLIP") {
       this.boosterFlipTimerSec += dt;
-      const toPadYawAngle = Math.atan2(-b.position.x, Math.max(50, b.position.y));
-      const targetPitch = clamp(toPadYawAngle - 0.85, -Math.PI * 0.56, -Math.PI * 0.35);
-      b.pitch = approachAngle(b.pitch, targetPitch, dt * 1.8);
+      const targetPitch = -Math.PI * 0.48;
+      b.pitch = approachAngle(b.pitch, targetPitch, dt * 1.9);
       b.roll = approach(b.roll, 0, dt * 1.4);
       targetThrottle = 0;
-      if (this.boosterFlipTimerSec >= 2.2 || b.fuel <= 0.075) {
+      if (this.boosterFlipTimerSec >= 2.4 || b.fuel <= 0.075) {
         b.status = b.fuel > 0.075 ? "BOOSTER_BOOSTBACK" : "BOOSTER_DESCENT";
       }
     } else if (b.status === "BOOSTER_BOOSTBACK") {
       const dragHorizScale =
-        this.planet.id === "earth" ? 0.72 : this.planet.id === "mars" ? 0.94 : 1.0;
-      const effT = Math.max(3.5, tFlight * dragHorizScale);
-      const desVx = clamp(-b.position.x / effT, -280, 280);
-      const desVz = clamp(-b.position.z / effT, -280, 280);
+        this.planet.id === "earth" ? 0.56 : this.planet.id === "mars" ? 0.94 : 1.0;
+      const effT = Math.max(6.0, tFlight * dragHorizScale);
+      const desVx = clamp(-b.position.x / effT, -1550, 1550);
+      const desVz = clamp(-b.position.z / effT, -1550, 1550);
       const errVx = desVx - b.velocity.x;
       const errVz = desVz - b.velocity.z;
       const errMag = Math.hypot(errVx, errVz);
 
-      // Pure horizontal boostback with minimal fractional loft proportional to error
-      const aimY = Math.min(4.0, errMag * 0.08);
+      const aimY = Math.min(8.0, errMag * 0.03);
       const aimMag = Math.max(1e-3, Math.hypot(errVx, aimY, errVz));
       const targetPitch = Math.atan2(errVx / aimMag, aimY / aimMag);
       const targetRoll = Math.atan2(errVz / aimMag, aimY / aimMag) * 0.5;
@@ -959,57 +1167,54 @@ export class FlightController {
       b.roll = approach(b.roll, targetRoll, dt * 2.4);
 
       const alignErr = Math.abs(wrapAngle(targetPitch - b.pitch));
-      if (alignErr < 0.75 && b.fuel > 0.075 && errMag >= 6) {
-        targetThrottle = clamp(errMag / 22, 0.1, 1.0);
+      if (alignErr < 0.75 && b.fuel > 0.075 && errMag >= 8) {
+        targetThrottle = clamp(errMag / 28, 0.15, 1.0);
       }
 
       const predX = b.position.x + b.velocity.x * effT;
       const predZ = b.position.z + b.velocity.z * effT;
       if (
-        errMag < 6 ||
-        Math.hypot(predX, predZ) < 40 ||
+        errMag < 8 ||
+        Math.hypot(predX, predZ) < 80 ||
         b.fuel <= 0.075 ||
-        (b.velocity.y < -15 && bAlt < 2500)
+        (vRad < -25 && bAlt < 4500)
       ) {
         targetThrottle = 0;
         b.status = "BOOSTER_DESCENT";
       }
     } else if (b.status === "BOOSTER_DESCENT") {
       targetThrottle = 0;
-      const tiltGainX = clamp((-b.position.x / Math.max(400, bAlt)) * 0.32, -0.32, 0.32);
-      const tiltGainZ = clamp((-b.position.z / Math.max(400, bAlt)) * 0.32, -0.32, 0.32);
+      const tiltGainX = clamp((-b.position.x / Math.max(600, bAlt)) * 0.34, -0.34, 0.34);
+      const tiltGainZ = clamp((-b.position.z / Math.max(600, bAlt)) * 0.34, -0.34, 0.34);
       b.pitch = approachAngle(b.pitch, tiltGainX, dt * 1.6);
       b.roll = approach(b.roll, tiltGainZ, dt * 1.6);
 
       const tToGround =
-        b.velocity.y < -4
-          ? clamp((bAlt - 180) / Math.max(10, -b.velocity.y), 1.5, 65)
-          : Math.max(6, tFlight);
-      const desVx = clamp(-b.position.x / Math.max(2.0, tToGround * 0.82), -160, 160);
-      const desVz = clamp(-b.position.z / Math.max(2.0, tToGround * 0.82), -160, 160);
+        vRad < -5
+          ? clamp((bAlt - 240) / Math.max(10, -vRad), 1.5, 130)
+          : Math.max(8, tFlight * 0.75);
+      const desVx = clamp(-b.position.x / Math.max(2.2, tToGround * 0.76), -900, 900);
+      const desVz = clamp(-b.position.z / Math.max(2.2, tToGround * 0.76), -900, 900);
       const maxFinAccel =
-        this.planet.id === "earth" ? 16.0 : this.planet.id === "mars" ? 14.0 : 12.0;
-      finAx = clamp((desVx - b.velocity.x) * 1.2, -maxFinAccel, maxFinAccel);
-      finAz = clamp((desVz - b.velocity.z) * 1.2, -maxFinAccel, maxFinAccel);
+        this.planet.id === "earth" ? 28.0 : this.planet.id === "mars" ? 20.0 : 18.0;
+      finAx = clamp((desVx - b.velocity.x) * 1.35, -maxFinAccel, maxFinAccel);
+      finAz = clamp((desVz - b.velocity.z) * 1.35, -maxFinAccel, maxFinAccel);
       b.gridFinPitch = clamp(finAx / maxFinAccel, -1, 1);
       b.gridFinYaw = clamp(finAz / maxFinAccel, -1, 1);
 
-      if (b.velocity.y < -2 && b.fuel > 0.002) {
-        const aStop = Math.max(6.0, BOOSTER_RTLS_MAX_ACCEL * 0.7 - gEff);
-        const stopDist = (b.velocity.y * b.velocity.y) / (2 * aStop);
-        const triggerAlt = Math.max(
-          420,
-          stopDist * 1.48 + 180 + Math.min(450, padOffset * 0.35)
-        );
+      if (vRad < -3 && b.fuel > 0.002) {
+        const aStop = Math.max(6.0, maxRtlsAccel * 0.74 - gEff);
+        const stopDist = (vRad * vRad) / (2 * aStop);
+        const triggerAlt = Math.max(520, stopDist * 1.24 + 180);
         if (bAlt <= triggerAlt) {
           b.status = "BOOSTER_LANDING_BURN";
         }
       }
     } else if (b.status === "BOOSTER_LANDING_BURN") {
-      const hRemain = Math.max(0, b.position.y - this.padDeckY);
-      const timeToGo = clamp(hRemain / Math.max(4, -b.velocity.y + 2.5), 0.55, 28);
-      const targetVx = clamp(-b.position.x / Math.max(1.2, timeToGo * 0.65), -58, 58);
-      const targetVz = clamp(-b.position.z / Math.max(1.2, timeToGo * 0.65), -58, 58);
+      const hRemain = Math.max(0, bAlt);
+      const timeToGo = clamp(hRemain / Math.max(4, -vRad + 2.5), 0.55, 36);
+      const targetVx = clamp(-b.position.x / Math.max(1.2, timeToGo * 0.65), -85, 85);
+      const targetVz = clamp(-b.position.z / Math.max(1.2, timeToGo * 0.65), -85, 85);
 
       const maxTilt = hRemain < 22 ? 0.05 : hRemain < 75 ? 0.16 : 0.44;
       const desiredPitch = clamp((targetVx - b.velocity.x) * 0.09, -maxTilt, maxTilt);
@@ -1019,27 +1224,35 @@ export class FlightController {
       b.gridFinPitch = clamp((desiredPitch - b.pitch) * 2.0, -0.7, 0.7);
       b.gridFinYaw = clamp((desiredRoll - b.roll) * 2.0, -0.7, 0.7);
 
-      const safeDecel = Math.max(6.0, BOOSTER_RTLS_MAX_ACCEL * 0.62 - gEff);
+      const isLeggedPadTouchdown =
+        this.vehicle.id !== "starship" || !this.site.supportsBoosterCatch;
+      if (isLeggedPadTouchdown && hRemain < 220) {
+        b.landingLegsDeployed = approach(b.landingLegsDeployed ?? 0, 1.0, dt / 1.6);
+      }
+
+      const safeDecel = Math.max(6.0, maxRtlsAccel * 0.65 - gEff);
       const targetVy =
-        hRemain > 14
-          ? -clamp(1.4 + Math.sqrt(2 * safeDecel * hRemain * 0.56), 1.8, 165)
-          : -1.4;
+        hRemain > 28
+          ? -clamp(2.0 + Math.sqrt(2 * safeDecel * (hRemain - 20)), 2.5, 1200)
+          : -clamp(1.4 + (hRemain / 28) * 9.0, 1.4, 11.0);
       const cosTilt = Math.max(0.55, Math.cos(b.pitch) * Math.cos(b.roll));
-      const desiredVertAccel = gEff + (targetVy - b.velocity.y) * 3.6;
+      const desiredVertAccel = gEff + (targetVy - vRad) * 3.6;
       targetThrottle =
-        b.fuel > 0 ? clamp(desiredVertAccel / (cosTilt * BOOSTER_RTLS_MAX_ACCEL), 0.04, 1.0) : 0;
+        b.fuel > 0 ? clamp(desiredVertAccel / (cosTilt * maxRtlsAccel), 0.04, 1.0) : 0;
     }
 
     b.throttle = b.fuel > 0 ? approach(b.throttle, targetThrottle, dt * 5.0) : 0;
-    const thrustAccel = b.throttle * BOOSTER_RTLS_MAX_ACCEL;
-    b.fuel = Math.max(0, b.fuel - b.throttle * BOOSTER_RTLS_BURN_RATE * dt);
+    const thrustAccel = b.throttle * maxRtlsAccel;
+    const massFlowRate = (thrustAccel * bMassKg) / prof.boosterVeMps;
+    b.fuel = Math.max(0, b.fuel - (massFlowRate / prof.boosterPropKg) * dt);
     this.boosterFuel = b.fuel;
 
-    // Lower Mechazilla carriage & close chopsticks cleanly as booster returns to Starbase Earth
-    if (
+    // Lower Mechazilla carriage & close chopsticks cleanly only when Starbase catches Starship booster
+    const canCatchAtSite =
       this.planet.id === "earth" &&
-      (b.status === "BOOSTER_DESCENT" || b.status === "BOOSTER_LANDING_BURN")
-    ) {
+      this.site.supportsBoosterCatch &&
+      this.vehicle.id === "starship";
+    if (canCatchAtSite && (b.status === "BOOSTER_DESCENT" || b.status === "BOOSTER_LANDING_BURN")) {
       this.catchCarriageY = approach(
         this.catchCarriageY,
         BOOSTER_CATCH_CARRIAGE_CATCH_Y,
@@ -1056,7 +1269,8 @@ export class FlightController {
     const dirY = cosP * Math.cos(b.roll);
     const dirZ = cosP * Math.sin(b.roll);
 
-    const dragDecel = bRho > 0 ? 0.00024 * bRho * bSpeed : 0;
+    const bSpeed = Math.hypot(b.velocity.x, b.velocity.y, b.velocity.z);
+    const dragDecel = bRho > 0 ? 0.00016 * bRho * bSpeed : 0;
     const gravFac = -mu / (rMag * rMag * rMag);
 
     b.velocity.x += (rx * gravFac + dirX * thrustAccel + finAx - dragDecel * b.velocity.x) * dt;
@@ -1102,14 +1316,16 @@ export class FlightController {
       b.active = false;
 
       if (finalPadDist <= 25 && impactVy <= 5.0 && impactHoriz <= 3.5 && tiltDeg <= 15.0) {
-        b.status = this.planet.id === "earth" ? "BOOSTER_CAUGHT" : "BOOSTER_LANDED";
+        b.status = canCatchAtSite ? "BOOSTER_CAUGHT" : "BOOSTER_LANDED";
         b.pitch = 0;
         b.roll = 0;
         b.gridFinPitch = 0;
         b.gridFinYaw = 0;
-        if (this.planet.id === "earth") {
+        if (canCatchAtSite) {
           this.catchArmsOpen = 0.02;
           this.catchCarriageY = BOOSTER_CATCH_CARRIAGE_CATCH_Y;
+        } else {
+          b.landingLegsDeployed = 1.0;
         }
       } else {
         b.status = "BOOSTER_CRASHED";
@@ -1280,7 +1496,10 @@ export class FlightController {
   }
 
   private triggerCrashRUD(cause: CrashCause, impactSpeedMps: number): void {
-    const activeMass = this.stageSeparated ? SHIP_MASS_KG : STACK_DRY_AND_WET_MASS_KG;
+    const prof = getVehicleLaunchProfile(this.vehicle.id, this.planet.id);
+    const activeMass = this.stageSeparated
+      ? prof.shipDryKg + this.shipFuel * prof.shipPropKg
+      : prof.stackDryAndPayloadKg + this.boosterFuel * prof.boosterPropKg;
     const fuelRatio = this.stageSeparated
       ? this.shipFuel
       : 0.65 * this.boosterFuel + 0.35 * this.shipFuel;
@@ -1506,7 +1725,13 @@ export class FlightController {
       if (this.tClockSec >= -2) {
         const spool = clamp((this.tClockSec + 2) / 2.0, 0, 1);
         this.throttle = spool * 0.85;
-        this.boosterThrottle = this.throttle;
+        if (this.vehicle.hasSideBoosters && !this.sideBoostersSeparated) {
+          this.sideBoosterThrottle = this.throttle;
+          this.boosterThrottle = 0;
+        } else {
+          this.sideBoosterThrottle = 0;
+          this.boosterThrottle = this.throttle;
+        }
         this.frostLevel = clamp(1.0 - spool * 0.12, 0, 1);
       }
       if (this.tClockSec >= 0) {
@@ -1521,7 +1746,12 @@ export class FlightController {
     this.umbilicalRetracted = 1.0;
     this.catchArmsOpen = approach(this.catchArmsOpen, 0.85, dt * 0.6);
 
-    const hasFuel = this.stageSeparated ? this.shipFuel > 0 : this.boosterFuel > 0;
+    const inSidePhase = this.vehicle.hasSideBoosters && !this.sideBoostersSeparated;
+    const hasFuel = this.stageSeparated
+      ? this.shipFuel > 0
+      : inSidePhase
+        ? this.sideBoosterFuel > 0
+        : this.boosterFuel > 0;
     const rx = this.pos.x;
     const ry = this.pos.y + R;
     const rz = this.pos.z;
@@ -1536,8 +1766,35 @@ export class FlightController {
     const theta = Math.atan2(rx, ry);
     const localGrav = mu / (rMag * rMag);
 
-    const stageProfile = getFirstStageProfile(this.planet.id);
+    const prof = getVehicleLaunchProfile(this.vehicle.id, this.planet.id);
     const orb = computeOrbitalElements(this.pos, this.vel, R, g0, atmoTop);
+
+    // Variable Tsiolkovsky vehicle mass & thrust-to-weight acceleration across Stage 0 / 1 / 2
+    const activeMassKg = this.stageSeparated
+      ? prof.shipDryKg + this.shipFuel * prof.shipPropKg
+      : inSidePhase
+        ? prof.sideBoosterDryKg +
+          this.sideBoosterFuel * prof.sideBoosterPropKg +
+          prof.stackDryAndPayloadKg +
+          prof.boosterPropKg
+        : prof.stackDryAndPayloadKg + this.boosterFuel * prof.boosterPropKg;
+    const nominalThrustN = this.stageSeparated
+      ? prof.shipThrustN
+      : inSidePhase
+        ? prof.sideBoosterThrustN
+        : prof.boosterThrustN;
+    const activeVeMps = this.stageSeparated
+      ? prof.shipVeMps
+      : inSidePhase
+        ? prof.sideBoosterVeMps
+        : prof.boosterVeMps;
+    const gCapMaxAccel = Math.min(prof.maxGLoadMps2, nominalThrustN / Math.max(1000, activeMassKg));
+    const faultScale = computeEffectiveThrustScale(
+      this.faultConfig,
+      altM,
+      this.missionTimeSec
+    );
+    const availAccel = gCapMaxAccel * faultScale;
 
     if (this.controlMode === "manual" && manualInput) {
       const prelimThrottle = hasFuel ? this.throttle : 0;
@@ -1554,35 +1811,34 @@ export class FlightController {
       let targetWorldPitch = theta;
 
       if (!this.stageSeparated) {
-        const isEarthMaxQ = this.planet.id === "earth" && altM > 400 && altM < 900;
-        const desiredNetClimb = isEarthMaxQ
-          ? stageProfile.netClimbMaxQ
-          : altM < stageProfile.climbSwitchAltM
-            ? stageProfile.netClimbLow
-            : stageProfile.netClimbHigh;
-        desiredThrottle = clamp((localGrav + desiredNetClimb) / stageProfile.maxAccel, 0.24, 1.0);
-        const turnFrac = clamp((altM - 250) / Math.max(4000, targetAlt * 0.52), 0, 1);
-        const localPitch = altM < 250 ? 0 : Math.pow(turnFrac, 0.72) * stageProfile.maxTurnRad;
+        // Real 1:1 Max-Q throttle bucket on Earth (~7.5-18 km)
+        const isEarthMaxQ = this.planet.id === "earth" && altM > 7_500 && altM < 18_000;
+        desiredThrottle = isEarthMaxQ ? 0.78 : 1.0;
+        const turnFrac = clamp((altM - 400) / Math.max(5_000, prof.stage1TurnAltEndM), 0, 1);
+        const localPitch = altM < 400 ? 0 : Math.pow(turnFrac, 0.74) * prof.stage1MaxTurnRad;
         targetWorldPitch = wrapAngle(theta + localPitch);
       } else if (this.phase === "ORBIT_ACHIEVED") {
         desiredThrottle = 0;
         const speedHoriz = Math.hypot(this.vel.x, this.vel.y);
         targetWorldPitch = speedHoriz > 1 ? Math.atan2(this.vel.x, this.vel.y) : wrapAngle(theta + Math.PI * 0.5);
       } else if (this.phase === "CIRCULARIZATION") {
-        const minGoalPe = Math.max(atmoTop * 0.9, Math.min(targetAlt * 0.95, orb.apoapsisAltM * 0.94));
+        const minGoalPe = Math.min(
+          targetAlt * 0.92,
+          Math.max(atmoTop * 1.25, orb.apoapsisAltM * 0.90)
+        );
         if (
           orb.isOrbitAchieved &&
-          (orb.periapsisAltM >= minGoalPe || orb.eccentricity < 0.02 || this.shipFuel <= 0.01)
+          (orb.periapsisAltM >= minGoalPe || this.shipFuel <= 0.01)
         ) {
           this.phase = "ORBIT_ACHIEVED";
           desiredThrottle = 0;
           targetWorldPitch = Math.atan2(this.vel.x, this.vel.y);
         } else {
-          const accEast = clamp((orb.circularVelocityMps * 1.002 - vTan) * 1.9, 0, 24);
+          const accEast = clamp((orb.circularVelocityMps * 1.001 - vTan) * 1.4, 0, availAccel);
           const centDeficit = Math.max(0, localGrav - (vTan * vTan) / rMag);
-          const accUp = clamp(-vRad * 0.85 + centDeficit * 0.8, -6, 18);
+          const accUp = clamp(-vRad * 0.65 + centDeficit * 0.85, -8, availAccel * 0.75);
           const reqAccel = Math.hypot(accEast, accUp);
-          desiredThrottle = clamp(reqAccel / 24.0, 0.08, 1.0);
+          desiredThrottle = clamp(reqAccel / Math.max(1, availAccel), 0.08, 1.0);
           targetWorldPitch = wrapAngle(theta + Math.atan2(accEast, accUp));
         }
       } else if (this.phase === "COAST_TO_AP") {
@@ -1592,39 +1848,40 @@ export class FlightController {
 
         if (orb.isOrbitAchieved) {
           this.phase = "ORBIT_ACHIEVED";
-        } else if (orb.apoapsisAltM < targetAlt * 0.95) {
+        } else if (orb.apoapsisAltM < targetAlt * 0.96) {
           this.phase = "ORBIT_INSERTION";
         } else {
-          const tBurnEst = Math.max(0, orb.circularVelocityMps - vTan) / 20.4;
+          const tBurnEst = Math.max(0, orb.circularVelocityMps - vTan) / Math.max(1, availAccel * 0.85);
           const nearAp =
-            (orb.timeToApoapsisS !== null && orb.timeToApoapsisS <= Math.max(2.5, tBurnEst * 0.58)) ||
-            (vRad <= 6 && altM >= targetAlt * 0.78);
+            (orb.timeToApoapsisS !== null && orb.timeToApoapsisS <= Math.max(4.0, tBurnEst * 0.56)) ||
+            (vRad <= 12 && altM >= targetAlt * 0.82);
           if (nearAp) {
             this.phase = "CIRCULARIZATION";
           }
         }
       } else {
-        // STAGE_SEP or ORBIT_INSERTION: gravity turn ascent + Apoapsis raising
-        const turnFrac = clamp((altM - 250) / Math.max(4000, targetAlt * 0.56), 0, 1);
-        let localPitch = Math.pow(turnFrac, 0.72) * (Math.PI * 0.465);
-        if (vRad < 18 && orb.apoapsisAltM < targetAlt * 0.98) {
-          localPitch = Math.min(localPitch, 1.08);
-        }
+        // STAGE_SEP / ORBIT_INSERTION: closed-loop gravity turn + radial-rate Apoapsis guidance
+        const altRemaining = Math.max(0, targetAlt - altM);
+        const centDeficit = Math.max(0, localGrav - (vTan * vTan) / rMag);
+        const desiredVRad = clamp(Math.sqrt(altRemaining) * 0.85, 8, 420);
+        const reqUpAccel = centDeficit + clamp((desiredVRad - vRad) * 0.35, -4.0, availAccel * 0.68);
+        const sinRatio = clamp(reqUpAccel / Math.max(1, availAccel), -0.3, 0.86);
+        const localPitch = Math.acos(sinRatio);
         targetWorldPitch = wrapAngle(theta + localPitch);
 
-        const coastReadyAlt = Math.max(atmoTop * 0.55, 2500);
-        if (orb.isOrbitAchieved) {
+        const coastReadyAlt = Math.max(atmoTop * 0.7, 15_000);
+        if (orb.isOrbitAchieved && orb.periapsisAltM >= targetAlt * 0.85) {
           this.phase = "ORBIT_ACHIEVED";
           desiredThrottle = 0;
-        } else if (orb.apoapsisAltM >= targetAlt * 1.008 && altM >= coastReadyAlt) {
+        } else if (orb.apoapsisAltM >= targetAlt * 1.005 && altM >= coastReadyAlt) {
           this.phase = "COAST_TO_AP";
           desiredThrottle = 0;
         } else if (orb.apoapsisAltM >= targetAlt * 1.02) {
           desiredThrottle = 0;
-        } else if (orb.apoapsisAltM >= targetAlt * 0.88) {
+        } else if (orb.apoapsisAltM >= targetAlt * 0.90) {
           desiredThrottle = clamp(
-            (targetAlt * 1.02 - orb.apoapsisAltM) / (targetAlt * 0.14),
-            0.25,
+            (targetAlt * 1.015 - orb.apoapsisAltM) / (targetAlt * 0.12),
+            0.22,
             1.0
           );
         } else {
@@ -1634,12 +1891,12 @@ export class FlightController {
 
       // Maintain tight zero-lift aero corridor during high-Q atmospheric flight
       if (
-        this.dynamicPressurePa > 20_000 &&
+        this.dynamicPressurePa > 22_000 &&
         this.phase !== "ORBIT_ACHIEVED" &&
         Math.hypot(this.vel.x, this.vel.y) > 40
       ) {
         const velAngle = Math.atan2(this.vel.x, this.vel.y);
-        const maxAoA = 0.28;
+        const maxAoA = 0.22;
         const delta = clamp(wrapAngle(targetWorldPitch - velAngle), -maxAoA, maxAoA);
         targetWorldPitch = wrapAngle(velAngle + delta);
       }
@@ -1663,29 +1920,56 @@ export class FlightController {
     }
 
     const activeThrottle = hasFuel ? this.throttle : 0;
+    const rawThrustAccel = activeThrottle * gCapMaxAccel;
     if (!this.stageSeparated) {
-      this.boosterThrottle = activeThrottle;
-      this.shipThrottle = 0;
-      this.boosterFuel = Math.max(
-        0,
-        this.boosterFuel - activeThrottle * stageProfile.burnRate * dt
-      );
-      this.booster.fuel = this.boosterFuel;
-      this.booster.throttle = activeThrottle;
-      this.booster.altitudeM = altM;
-      this.booster.verticalSpeedMps = vRad;
-      this.booster.padOffsetM = Math.hypot(this.pos.x, this.pos.z);
+      if (inSidePhase) {
+        this.sideBoosterThrottle = activeThrottle;
+        this.boosterThrottle = 0;
+        this.shipThrottle = 0;
+        const mDot = (rawThrustAccel * activeMassKg) / activeVeMps;
+        this.sideBoosterFuel = Math.max(
+          0,
+          this.sideBoosterFuel - (mDot / Math.max(1, prof.sideBoosterPropKg)) * dt
+        );
+        this.booster.fuel = this.boosterFuel;
+        this.booster.throttle = 0;
+        this.booster.altitudeM = altM;
+        this.booster.verticalSpeedMps = vRad;
+        const bAngle = Math.atan2(Math.hypot(rx, rz), Math.max(1, ry));
+        this.booster.padOffsetM = R * bAngle;
 
-      if (
-        (this.controlMode === "autopilot" || this.controlMode === "ai_ppo") &&
-        this.boosterFuel <= BOOSTER_RTLS_RESERVE_FUEL
-      ) {
-        this.triggerStageSeparation();
+        if (
+          (this.controlMode === "autopilot" || this.controlMode === "ai_ppo") &&
+          this.sideBoosterFuel <= 0.005
+        ) {
+          this.triggerSideBoosterSeparation();
+        }
+      } else {
+        this.sideBoosterThrottle = 0;
+        this.boosterThrottle = activeThrottle;
+        this.shipThrottle = 0;
+        const mDot = (rawThrustAccel * activeMassKg) / activeVeMps;
+        this.boosterFuel = Math.max(0, this.boosterFuel - (mDot / prof.boosterPropKg) * dt);
+        this.booster.fuel = this.boosterFuel;
+        this.booster.throttle = activeThrottle;
+        this.booster.altitudeM = altM;
+        this.booster.verticalSpeedMps = vRad;
+        const bAngle = Math.atan2(Math.hypot(rx, rz), Math.max(1, ry));
+        this.booster.padOffsetM = R * bAngle;
+
+        if (
+          (this.controlMode === "autopilot" || this.controlMode === "ai_ppo") &&
+          this.boosterFuel <= this.vehicle.rtlsReserveFuel
+        ) {
+          this.triggerStageSeparation();
+        }
       }
     } else {
+      this.sideBoosterThrottle = 0;
       this.boosterThrottle = 0;
       this.shipThrottle = activeThrottle;
-      this.shipFuel = Math.max(0, this.shipFuel - activeThrottle * 0.0055 * dt);
+      const mDot = (rawThrustAccel * activeMassKg) / activeVeMps;
+      this.shipFuel = Math.max(0, this.shipFuel - (mDot / prof.shipPropKg) * dt);
       this.stageSepElapsedSec += dt;
       if (this.phase === "STAGE_SEP" && this.stageSepElapsedSec >= 1.0) {
         this.phase = "ORBIT_INSERTION";
@@ -1701,13 +1985,7 @@ export class FlightController {
     this.gridFinPitch = this.gimbalX * 0.9;
     this.gridFinYaw = this.gimbalZ * 0.9;
 
-    const maxThrustAccel = this.stageSeparated ? 24.0 : stageProfile.maxAccel;
-    const faultScale = computeEffectiveThrustScale(
-      this.faultConfig,
-      altM,
-      this.missionTimeSec
-    );
-    const thrustAccel = activeThrottle * maxThrustAccel * faultScale;
+    const thrustAccel = activeThrottle * availAccel;
     const sinP = Math.sin(this.pitch);
     const cosP = Math.cos(this.pitch);
     const dirX = sinP;
@@ -1715,7 +1993,7 @@ export class FlightController {
     const dirZ = cosP * Math.sin(this.roll);
 
     const speed = Math.hypot(this.vel.x, this.vel.y, this.vel.z);
-    const dragFactor = rho > 0 ? 0.000035 * rho * speed : 0;
+    const dragFactor = rho > 0 ? prof.dragCoeff * rho * speed : 0;
     const wind = computeCrosswindAccel(this.faultConfig, rho, altM, this.missionTimeSec);
 
     const axNonGrav = dirX * thrustAccel - dragFactor * this.vel.x + wind.ax;
@@ -1918,8 +2196,18 @@ export class FlightController {
       this.planet.scale.atmosphereTopM
     );
 
+    const downrangeRad = Math.atan2(
+      Math.hypot(this.pos.x, this.pos.z),
+      Math.max(1, this.pos.y + R)
+    );
+    const downrangeKm =
+      this.missionMode === "launch" ? (R * downrangeRad) / 1000 : Math.hypot(this.pos.x, this.pos.z) / 1000;
+    const atmosphericLayer = classifyAtmosphericLayer(this.planet.id, altitudeM);
+
     return {
       planetId: this.planet.id,
+      launchSiteId: this.site.id,
+      vehicleId: this.vehicle.id,
       missionMode: this.missionMode,
       controlMode: this.controlMode,
       phase: this.phase,
@@ -1931,6 +2219,10 @@ export class FlightController {
       padDeckY: this.padDeckY,
       surfaceHeightM,
       altitudeM,
+      altitudeKm: altitudeM / 1000,
+      downrangeKm,
+      karmanLineCrossed: this.planet.id === "earth" && altitudeM >= 100_000,
+      atmosphericLayer,
       speedMps,
       speedKmh: speedMps * 3.6,
       verticalSpeedMps,
@@ -1941,8 +2233,10 @@ export class FlightController {
       throttle: this.throttle,
       boosterThrottle: this.boosterThrottle,
       shipThrottle: this.shipThrottle,
+      sideBoosterThrottle: this.sideBoosterThrottle,
       boosterFuel: this.boosterFuel,
       shipFuel: this.shipFuel,
+      sideBoosterFuel: this.sideBoosterFuel,
       frostLevel: this.frostLevel,
       umbilicalRetracted: this.umbilicalRetracted,
       catchArmsOpen: this.catchArmsOpen,
@@ -1953,6 +2247,7 @@ export class FlightController {
       landingLegsDeployed: this.landingLegsDeployed,
       targetLandingLegs: this.targetLandingLegs,
       stageSeparated: this.stageSeparated,
+      sideBoostersSeparated: this.sideBoostersSeparated,
       gimbalX: this.gimbalX,
       gimbalZ: this.gimbalZ,
       position: { ...this.pos },
@@ -1981,9 +2276,21 @@ export class FlightController {
         padOffsetM: this.booster.padOffsetM,
         gridFinPitch: this.booster.gridFinPitch,
         gridFinYaw: this.booster.gridFinYaw,
+        landingLegsDeployed: this.booster.landingLegsDeployed ?? 0,
         touchdownVerticalSpeedMps: this.booster.touchdownVerticalSpeedMps,
         touchdownOffsetM: this.booster.touchdownOffsetM,
         impactEvent: this.booster.impactEvent,
+      },
+      sideBoosters: {
+        active: this.sideBoosters.active,
+        leftPos: { ...this.sideBoosters.leftPos },
+        rightPos: { ...this.sideBoosters.rightPos },
+        leftVel: { ...this.sideBoosters.leftVel },
+        rightVel: { ...this.sideBoosters.rightVel },
+        pitch: this.sideBoosters.pitch,
+        yaw: this.sideBoosters.yaw,
+        roll: this.sideBoosters.roll,
+        spinAngle: this.sideBoosters.spinAngle,
       },
       landingVerdict: this.landingVerdict,
       crashEvent: this.crashEvent,
@@ -1999,14 +2306,18 @@ export class FlightController {
       orbital: {
         apoapsisAltM: orb.apoapsisAltM,
         periapsisAltM: orb.periapsisAltM,
+        apoapsisKm: Number.isFinite(orb.apoapsisAltM) ? orb.apoapsisAltM / 1000 : Infinity,
+        periapsisKm: orb.periapsisAltM / 1000,
         eccentricity: orb.eccentricity,
         circularVelocityMps: orb.circularVelocityMps,
         orbitalSpeedMps: orb.orbitalSpeedMps,
         orbitalPeriodS: orb.orbitalPeriodS,
+        orbitalPeriodMin: orb.orbitalPeriodS !== null ? orb.orbitalPeriodS / 60 : null,
         timeToApoapsisS: orb.timeToApoapsisS,
         targetOrbitAltM: this.planet.scale.targetOrbitAltM,
         isBoundOrbit: orb.isBoundOrbit,
-        orbitAchieved: this.phase === "ORBIT_ACHIEVED" || orb.isOrbitAchieved,
+        orbitAchieved:
+          orb.isOrbitAchieved && this.phase !== "CRASHED" && this.phase !== "TOUCHDOWN",
         timeWarp: this.timeWarp,
         apoapsisWorldPos: orb.apoapsisWorldPos,
         periapsisWorldPos: orb.periapsisWorldPos,

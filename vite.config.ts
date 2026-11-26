@@ -9,8 +9,8 @@ function cspMetaPlugin(): Plugin {
     },
     transformIndexHtml(html) {
       const policy = isServe
-        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' blob: http://127.0.0.1:5173; worker-src 'self' blob: http://127.0.0.1:5173; style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; img-src 'self' data: blob:; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 blob: data:;"
-        : "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self';";
+        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' blob: http://127.0.0.1:5173; worker-src 'self' blob: http://127.0.0.1:5173; style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 blob: data: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov https://celestrak.org;"
+        : "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov https://celestrak.org;";
 
       return html.replace(
         "<head>",
@@ -20,9 +20,41 @@ function cspMetaPlugin(): Plugin {
   };
 }
 
+/**
+ * satellite.js v7.x re-exports an optional Emscripten pthreads WASM bulk propagator
+ * that references node:worker_threads via top-level await. AetherSim uses the pure-JS
+ * SGP4 API (`json2satrec`, `propagate`, `gstime`, `eciToGeodetic`), so stubbing the
+ * unused `./wasm/index.js` export keeps the production bundle clean and fast.
+ */
+function skipUnusedSatelliteWasmPlugin(): Plugin {
+  const virtualId = "\0satellite-wasm-stub";
+  return {
+    name: "skip-unused-satellite-wasm",
+    enforce: "pre",
+    resolveId(source, importer) {
+      const normImporter = importer ? importer.replace(/\\/g, "/") : "";
+      if (
+        normImporter.includes("/satellite.js/") &&
+        (source === "./wasm/index.js" ||
+          source.endsWith("/wasm/index.js") ||
+          source.startsWith("#wasm-"))
+      ) {
+        return virtualId;
+      }
+      return null;
+    },
+    load(id) {
+      if (id === virtualId) {
+        return "export default function () { return Promise.resolve({}); }";
+      }
+      return null;
+    },
+  };
+}
+
 export default defineConfig({
   base: "./",
-  plugins: [cspMetaPlugin()],
+  plugins: [cspMetaPlugin(), skipUnusedSatelliteWasmPlugin()],
   css: {
     postcss: {
       plugins: [],

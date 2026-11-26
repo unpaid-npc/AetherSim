@@ -21,7 +21,7 @@ void main() {
   // Atmospheric pressure expansion:
   // Earth (~1 bar): tight supersonic column; Mars (0.006 bar): wide plume; Moon (0 bar): wide vacuum fan
   float vacExpand = 1.0 - smoothstep(0.0, 0.35, uPressureBar);
-  float radialScale = mix(1.0 + axial * 0.65, 1.0 + pow(axial, 0.72) * 3.8, vacExpand);
+  float radialScale = mix(1.0 + axial * 0.6, 1.0 + pow(axial, 0.72) * 2.4, vacExpand);
   float flutter = sin(axial * 22.0 - uTime * 48.0) * 0.045 * axial * uThrottle;
 
   vec3 pos = position;
@@ -42,6 +42,7 @@ uniform float uTime;
 uniform float uThrottle;
 uniform float uPressureBar;
 uniform float uSeedOffset;
+uniform float uPlumeStyle; // 0 = methalox (blue-violet), 1 = kerolox (golden amber), 2 = solid_hybrid (bright white-amber)
 
 varying vec2 vUv;
 varying float vAxial;
@@ -85,9 +86,20 @@ void main() {
   float tailFade = (1.0 - smoothstep(0.32, 1.0, t)) * (0.72 + 0.28 * turb);
   float throatSoft = smoothstep(0.0, 0.04, t);
 
-  vec3 coreColor = vec3(1.65, 2.25, 3.1); // HDR blue-white methane/LOX throat
-  vec3 diamondColor = vec3(2.1, 2.4, 3.2);
-  vec3 outerAtmColor = vec3(1.55, 0.82, 0.34); // Afterburning amber/orange sheath
+  vec3 coreColor = vec3(1.35, 1.85, 2.55); // Crisp blue-white methalox throat
+  vec3 diamondColor = vec3(1.65, 2.0, 2.65);
+  vec3 outerAtmColor = vec3(1.55, 0.82, 0.34);
+  if (uPlumeStyle > 1.5) {
+    // Solid propellant (LVM3 S200): dazzling bright white-gold exhaust
+    coreColor = vec3(2.05, 1.92, 1.58);
+    diamondColor = vec3(1.9, 1.65, 1.15);
+    outerAtmColor = vec3(1.85, 1.15, 0.42);
+  } else if (uPlumeStyle > 0.5) {
+    // RP-1 Kerolox (Falcon 9 Merlin / Saturn V F-1): golden-amber luminous plume
+    coreColor = vec3(1.85, 1.48, 0.88);
+    diamondColor = vec3(1.95, 1.55, 0.95);
+    outerAtmColor = vec3(1.75, 0.78, 0.22);
+  }
   vec3 vacVioletColor = vec3(0.75, 0.82, 1.45); // Translucent vacuum expansion fan
 
   vec3 basePlume = mix(vacVioletColor, outerAtmColor, atmPresence * (0.35 + 0.65 * fine));
@@ -129,6 +141,7 @@ export function createExhaustPlumeMaterial(seedOffset = 0): THREE.ShaderMaterial
       uPressureBar: { value: 0.00636 },
       uPlumeLength: { value: 18.0 },
       uSeedOffset: { value: seedOffset },
+      uPlumeStyle: { value: 0 },
     },
   });
 }
@@ -138,10 +151,12 @@ export function updateExhaustPlumeUniforms(
   elapsedSec: number,
   throttle: number,
   pressureBar: number,
-  plumeLength: number
+  plumeLength: number,
+  plumeStyle = 0
 ): void {
   mat.uniforms.uTime.value = elapsedSec;
   mat.uniforms.uThrottle.value = throttle;
   mat.uniforms.uPressureBar.value = pressureBar;
   mat.uniforms.uPlumeLength.value = plumeLength;
+  mat.uniforms.uPlumeStyle.value = plumeStyle;
 }

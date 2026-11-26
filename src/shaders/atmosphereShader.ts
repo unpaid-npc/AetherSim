@@ -59,16 +59,24 @@ void main() {
   float spaceT = uAtmosphereTop > 1.0
     ? smoothstep(0.0, uAtmosphereTop, uCameraAltitude)
     : 1.0;
-  float effAtmo = uAtmosphereStrength * pow(1.0 - spaceT, 1.45);
-  float effStarIntensity = mix(uStarIntensity, 1.0, smoothstep(0.15, 0.72, spaceT));
+  float effAtmo = uAtmosphereStrength * pow(1.0 - spaceT, 1.35);
+  float effStarIntensity = mix(uStarIntensity, 1.0, smoothstep(0.32, 0.85, spaceT));
 
   float elevation = clamp(dir.y, -0.15, 1.0);
   float up = max(elevation, 0.0);
   float horizonFactor = pow(1.0 - up, 3.2);
   float zenithFactor = smoothstep(0.0, 0.78, up);
 
-  // Base atmospheric gradient + Rayleigh-inspired wavelength balance
-  vec3 skyBase = mix(uZenithColor, uHorizonColor, horizonFactor);
+  // Multi-layer altitude atmosphere: Troposphere azure -> Stratosphere cobalt -> Mesosphere indigo
+  float stratT = uAtmosphereTop > 1.0 ? smoothstep(10000.0, 48000.0, uCameraAltitude) : 1.0;
+  float mesoT = uAtmosphereTop > 1.0 ? smoothstep(42000.0, 92000.0, uCameraAltitude) : 1.0;
+  vec3 stratZenith = vec3(0.024, 0.092, 0.30);
+  vec3 mesoZenith = vec3(0.008, 0.020, 0.075);
+  vec3 layeredZenith = mix(uZenithColor, stratZenith, stratT);
+  layeredZenith = mix(layeredZenith, mesoZenith, mesoT);
+  vec3 layeredHorizon = mix(uHorizonColor, mix(uHorizonColor, uZenithColor, 0.45), stratT * 0.75);
+
+  vec3 skyBase = mix(layeredZenith, layeredHorizon, horizonFactor);
   vec3 rayleighScatter = uRayleighCoeff * (0.28 + 0.72 * horizonFactor) * (1.0 - 0.45 * zenithFactor);
   vec3 atmosphereCol = mix(skyBase, skyBase + rayleighScatter * 0.55, effAtmo);
 
@@ -270,7 +278,7 @@ export class AtmosphereDome {
     this.skyMaterial.uniforms.uAtmosphereTop.value = atmosphereTopM;
 
     if (this.hasClouds) {
-      const t = Math.max(0, Math.min(1, (cameraAltitudeM - 1500) / 2300));
+      const t = Math.max(0, Math.min(1, (cameraAltitudeM - 8000) / 10000));
       const localCloudFade = 1 - t * t * (3 - 2 * t);
       this.cloudMaterial.uniforms.uCloudOpacity.value = localCloudFade;
       this.cloudMesh.visible = localCloudFade > 0.01;

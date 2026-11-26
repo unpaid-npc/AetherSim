@@ -5,6 +5,9 @@ import { createServer } from "vite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
+const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
+const appVersion = pkg.version || "2.0.0";
+const majorPrefix = `v${String(appVersion).split(".")[0]}`;
 
 const vite = await createServer({
   root: rootDir,
@@ -23,9 +26,11 @@ try {
   fs.mkdirSync(docsDir, { recursive: true });
 
   // 1. Write machine-readable JSON
+  const jsonFileName = `${majorPrefix}_benchmark.json`;
+  const csvFileName = `${majorPrefix}_benchmark.csv`;
   fs.writeFileSync(
-    path.join(resultsDir, "v1_benchmark.json"),
-    JSON.stringify(report, null, 2)
+    path.join(resultsDir, jsonFileName),
+    JSON.stringify({ version: appVersion, ...report }, null, 2)
   );
 
   // 2. Write CSV
@@ -70,7 +75,7 @@ try {
     ].join(",");
   });
   fs.writeFileSync(
-    path.join(resultsDir, "v1_benchmark.csv"),
+    path.join(resultsDir, csvFileName),
     [csvHeader, ...csvRows].join("\n")
   );
 
@@ -91,9 +96,9 @@ try {
   const nominalRows = report.rows.filter((r) => r.scenario === "nominal");
   const stressRows = report.rows.filter((r) => r.scenario === "fault_stress");
 
-  const md = `# AetherSim v1.0.0 — Multi-Planet Benchmark Report
+  const md = `# AetherSim v${appVersion} — Multi-Planet Benchmark Report
 
-Generated automatically by \`npm run benchmark\` ([scripts/run-benchmark.mjs](../scripts/run-benchmark.mjs) / [src/research/benchmarkHarness.ts](../src/research/benchmarkHarness.ts)) with raw outputs stored in [results/v1_benchmark.json](../results/v1_benchmark.json) and [results/v1_benchmark.csv](../results/v1_benchmark.csv).
+Generated automatically by \`npm run benchmark\` ([scripts/run-benchmark.mjs](../scripts/run-benchmark.mjs) / [src/research/benchmarkHarness.ts](../src/research/benchmarkHarness.ts)) with raw outputs stored in [results/${jsonFileName}](../results/${jsonFileName}) and [results/${csvFileName}](../results/${csvFileName}).
 
 ---
 

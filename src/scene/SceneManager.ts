@@ -25,9 +25,27 @@ import {
   mapRawActionToAIInput,
 } from "../ai/RLEnvironment";
 import { SoundEngine } from "../audio/SoundEngine";
-import { type PlanetConfig, type PlanetId, getPlanetConfig } from "../config/planets";
+import {
+  type LaunchSiteConfig,
+  type LaunchSiteId,
+  getDefaultLaunchSiteForPlanet,
+  getLaunchSiteConfig,
+} from "../config/launchSites";
+import {
+  DEFAULT_PLANET_ID,
+  type PlanetConfig,
+  type PlanetId,
+  getPlanetConfig,
+} from "../config/planets";
+import {
+  DEFAULT_VEHICLE_ID,
+  type VehicleConfig,
+  type VehicleId,
+  getVehicleConfig,
+} from "../config/vehicles";
 import { ExplosionSystem } from "../effects/ExplosionSystem";
 import { PropulsionEffects, type QualityPreset } from "../effects/PropulsionEffects";
+import { AutoQualityGuard } from "../ui/uiGuards";
 import { smoothstep } from "../utils/noise";
 import type { FlightLogSample } from "../research/DataExporter";
 import type { MonteCarloPilot, MonteCarloSummary } from "../research/MonteCarloRunner";
@@ -48,19 +66,37 @@ import {
 } from "../sim/FlightController";
 import {
   CameraDirector,
+  type CameraDirectorState,
   type CameraFocusMode,
   type CameraPreset,
+  type CameraSceneContext,
   type TrackTarget,
 } from "./CameraDirector";
 import { LaunchComplex } from "./LaunchComplex";
+import { CoastalEnvironment } from "./CoastalEnvironment";
+import { EarthTileOverlay } from "./EarthTileOverlay";
+import {
+  OrbitalObjectManager,
+  type OrbitalVisibilityOptions,
+} from "./OrbitalObjectManager";
 import { OrbitVisualizer } from "./OrbitVisualizer";
+import type {
+  OrbitalProvenanceSummary,
+  SatelliteStateSnapshot,
+} from "../orbital/SatelliteCatalog";
 import { PlanetGlobe } from "./PlanetGlobe";
 import { PostProcessingPipeline } from "./PostProcessing";
 import { disposeVehicleTextureCache } from "./ProceduralTextures";
 import { StarshipVehicle } from "./StarshipVehicle";
 import { TerrainSystem } from "./TerrainSystem";
 
-export type { CameraFocusMode, CameraPreset, TrackTarget } from "./CameraDirector";
+export type {
+  CameraDirectorState,
+  CameraFocusMode,
+  CameraMode,
+  CameraPreset,
+  TrackTarget,
+} from "./CameraDirector";
 export type AITrainingMode = "idle" | "pre_training" | "live_train" | "turbo_train" | "eval";
 
 export interface AIStatusSnapshot {
@@ -88,11 +124,21 @@ export interface SceneTelemetry {
   canvasNonBlackPct: number;
   canvasMeanRgb: [number, number, number];
   quality: QualityPreset;
+  autoQualityEnabled: boolean;
+  launchSiteId: LaunchSiteId;
+  vehicleId: VehicleId;
   cameraPreset: CameraPreset;
   trackTarget: TrackTarget;
   autoDirector: boolean;
+  padRangeHint: string | null;
   audioMuted: boolean;
   orbitPathEnabled: boolean;
+  gibsTilesLoaded: boolean;
+  orbitalObjects: readonly SatelliteStateSnapshot[];
+  selectedOrbitalId: string;
+  inspectedOrbitalId: string | null;
+  orbitalProvenance: OrbitalProvenanceSummary;
+  orbitalVisibility: OrbitalVisibilityOptions;
   flight: FlightTelemetry;
   ai: AIStatusSnapshot;
 }
@@ -119,8 +165,11 @@ export class SceneManager {
 
   private readonly atmosphereDome: AtmosphereDome;
   private readonly planetGlobe: PlanetGlobe;
+  private readonly earthTileOverlay: EarthTileOverlay;
   private readonly orbitVisualizer: OrbitVisualizer;
+  private readonly orbitalObjects: OrbitalObjectManager;
   private readonly terrainSystem: TerrainSystem;
+  private readonly coastalEnvironment: CoastalEnvironment;
   private readonly launchComplex: LaunchComplex;
   private readonly vehicle: StarshipVehicle;
   private readonly propulsionEffects: PropulsionEffects;
@@ -130,14 +179,26 @@ export class SceneManager {
   private readonly sunDirVec = new THREE.Vector3(0.6, 0.4, -0.7).normalize();
 
   private currentPlanet: PlanetConfig;
+  private currentSite: LaunchSiteConfig;
+  private currentVehicle: VehicleConfig;
   private quality: QualityPreset = "med";
+  private readonly autoQualityGuard = new AutoQualityGuard();
+  private onAutoQualityStepDown?: (from: QualityPreset, to: QualityPreset, fps: number) => void;
   private prevStageSeparated = false;
+  private prevSideSeparated = false;
   private vehicleIntact = true;
   private lastCrashId = -1;
   private lastBoosterCrashId = -1;
 
   private readonly shakeOffset = new THREE.Vector3();
   private readonly projVec = new THREE.Vector3();
+  private readonly stationPosScratch = new THREE.Vector3();
+  private readonly inspectedPosScratch = new THREE.Vector3();
+  private onCameraStateChange?: (state: CameraDirectorState) => void;
+  private onOrbitalObjectPicked?: (snap: SatelliteStateSnapshot) => void;
+  private pointerDownX = 0;
+  private pointerDownY = 0;
+  private pointerDownBtn = -1;
 
   private manualInput: ManualInputState = {
     throttleDelta: 0,
@@ -204,7 +265,7 @@ export class SceneManager {
 
   constructor(
     canvas: HTMLCanvasElement,
-    initialPlanetId: PlanetId = "mars",
+    initialPlanetId: PlanetId = DEFAULT_PLANET_ID,
     onTelemetry?: (telemetry: SceneTelemetry) => void,
     onMonteCarloResult?: (summary: MonteCarloSummary) => void
   ) {
@@ -212,6 +273,8 @@ export class SceneManager {
     this.onTelemetry = onTelemetry;
     this.onMonteCarloResult = onMonteCarloResult;
     this.currentPlanet = getPlanetConfig(initialPlanetId);
+    this.currentSite = getDefaultLaunchSiteForPlanet(initialPlanetId);
+    this.currentVehicle = getVehicleConfig(DEFAULT_VEHICLE_ID);
 
     this.liveTrainer = new PPOTrainer(
       {
@@ -313,7 +376,8 @@ export class SceneManager {
       logarithmicDepthBuffer: true,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.0));
+    const initialPr = Math.min(window.devicePixelRatio || 1, this.getMaxPixelRatio(this.quality));
+    this.renderer.setPixelRatio(initialPr);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -328,7 +392,7 @@ export class SceneManager {
       52,
       window.innerWidth / Math.max(1, window.innerHeight),
       0.5,
-      Math.max(250_000, this.currentPlanet.scale.simRadiusM * 20)
+      Math.max(500_000, this.currentPlanet.scale.simRadiusM * 26)
     );
     this.cameraDirector = new CameraDirector(this.camera, this.canvas);
     this.cameraDirector.setPlanetRadius(this.currentPlanet.scale.simRadiusM);
@@ -354,32 +418,64 @@ export class SceneManager {
 
     const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
     this.atmosphereDome = new AtmosphereDome(this.currentPlanet);
-    this.terrainSystem = new TerrainSystem(this.currentPlanet, maxAnisotropy);
+    this.terrainSystem = new TerrainSystem(
+      this.currentPlanet,
+      maxAnisotropy,
+      this.quality,
+      this.currentSite
+    );
+    this.coastalEnvironment = new CoastalEnvironment(
+      this.currentPlanet,
+      this.quality,
+      maxAnisotropy,
+      this.currentSite
+    );
     this.planetGlobe = new PlanetGlobe(
       this.currentPlanet,
       this.quality,
       maxAnisotropy,
       (color) => this.terrainSystem.setSatelliteSiteTint(color)
     );
+    this.planetGlobe.setLaunchSite(
+      this.currentSite.id,
+      this.currentSite.latDeg,
+      this.currentSite.lonDeg
+    );
+    this.earthTileOverlay = new EarthTileOverlay(this.currentPlanet);
+    this.earthTileOverlay.setSiteCoords(this.currentSite.latDeg, this.currentSite.lonDeg);
     this.orbitVisualizer = new OrbitVisualizer(this.currentPlanet);
-    this.launchComplex = new LaunchComplex(this.currentPlanet, maxAnisotropy);
-    this.vehicle = new StarshipVehicle(maxAnisotropy);
+    this.orbitVisualizer.setSiteShortName(this.currentSite.shortName);
+    this.orbitalObjects = new OrbitalObjectManager(this.currentPlanet, this.currentSite);
+    this.launchComplex = new LaunchComplex(
+      this.currentPlanet,
+      maxAnisotropy,
+      this.quality,
+      this.currentSite
+    );
+    this.vehicle = new StarshipVehicle(maxAnisotropy, this.currentVehicle.id);
     this.propulsionEffects = new PropulsionEffects(
       this.currentPlanet,
       this.vehicle.getBoosterPlumeAnchor(),
       this.vehicle.getShipPlumeAnchor(),
-      this.vehicle.getRcsAnchorGroup()
+      this.vehicle.getRcsAnchorGroup(),
+      this.vehicle.getSideBoosterPlumeAnchors()
     );
+    this.propulsionEffects.reconfigureSockets(this.vehicle.getPlumeSocketSpec());
     this.explosionSystem = new ExplosionSystem(this.currentPlanet);
 
     this.scene.add(
       this.atmosphereDome.group,
       this.planetGlobe.group,
+      this.earthTileOverlay.group,
       this.orbitVisualizer.group,
+      this.orbitalObjects.group,
       this.terrainSystem.group,
+      this.coastalEnvironment.group,
       this.launchComplex.group,
       this.vehicle.root,
       this.vehicle.detachedBoosterRoot,
+      this.vehicle.detachedLeftSideRoot,
+      this.vehicle.detachedRightSideRoot,
       this.propulsionEffects.worldGroup,
       this.explosionSystem.group
     );
@@ -391,24 +487,100 @@ export class SceneManager {
       window.innerWidth,
       window.innerHeight
     );
+    this.postProcessing.setSize(window.innerWidth, Math.max(1, window.innerHeight), initialPr);
 
     this.flightController = new FlightController(
       this.currentPlanet.id,
       this.launchComplex.getPadDeckY(),
-      "launch"
+      "launch",
+      this.currentVehicle.id,
+      this.currentSite.id
     );
 
+    this.cameraDirector.setStateListener((camState) => {
+      this.onCameraStateChange?.(camState);
+    });
     this.applyPlanetEnvironment(this.currentPlanet);
-    this.syncVisualsFromTelemetry(this.flightController.getTelemetry());
-    this.cameraDirector.reLockOnVehicle(
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget(),
-      true
-    );
+    const initTel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(initTel);
+    this.cameraDirector.reLockOnVehicle(this.buildCameraContext(initTel));
+    this.syncFloatingOriginTransforms(initTel, 0);
+    this.orbitalObjects.startInitialLiveSync();
 
+    this.canvas.addEventListener("pointerdown", this.handleCanvasPointerDown);
+    this.canvas.addEventListener("pointerup", this.handleCanvasPointerUp);
     window.addEventListener("resize", this.handleResize);
     this.lastFrameTime = performance.now();
     this.animate();
+  }
+
+  setOrbitalObjectPickedListener(listener: (snap: SatelliteStateSnapshot) => void): void {
+    this.onOrbitalObjectPicked = listener;
+  }
+
+  private readonly handleCanvasPointerDown = (event: PointerEvent): void => {
+    this.pointerDownX = event.clientX;
+    this.pointerDownY = event.clientY;
+    this.pointerDownBtn = event.button;
+  };
+
+  private readonly handleCanvasPointerUp = (event: PointerEvent): void => {
+    if (this.pointerDownBtn !== 0 || event.button !== 0) {
+      return;
+    }
+    const moved = Math.hypot(
+      event.clientX - this.pointerDownX,
+      event.clientY - this.pointerDownY
+    );
+    if (moved > 6) {
+      return;
+    }
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 10 || rect.height < 10) {
+      return;
+    }
+    const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+    const hit = this.orbitalObjects.pickAtNdc(
+      ndcX,
+      ndcY,
+      this.camera,
+      rect.width,
+      rect.height,
+      this.cameraDirector.getRenderOrigin()
+    );
+    if (hit) {
+      this.selectOrbitalObject(hit.id);
+      this.onOrbitalObjectPicked?.(hit);
+    }
+  };
+
+  setCameraStateListener(listener: (state: CameraDirectorState) => void): void {
+    this.onCameraStateChange = listener;
+    listener(this.cameraDirector.getState());
+  }
+
+  private buildCameraContext(tel: FlightTelemetry): CameraSceneContext {
+    const inspected = this.orbitalObjects.getInspectedWorldPosition(this.inspectedPosScratch);
+    return {
+      tel,
+      baseTarget: this.launchComplex.getBaseFocusTarget(),
+      stationWorldPos:
+        this.orbitalObjects.getPrimaryStationWorldPosition(this.stationPosScratch) ??
+        this.launchComplex.getOrbitalStationWorldPosition(this.stationPosScratch),
+      inspectedOrbitalPos: inspected ? inspected.pos : null,
+      inspectedOrbitalRadiusM: inspected?.inspectRadiusM,
+      shipGroup: this.vehicle.getShipGroup(),
+      boosterGroup: this.vehicle.getBoosterGroup(),
+      vehicleRoot: this.vehicle.root,
+      detachedBoosterRoot: this.vehicle.detachedBoosterRoot,
+    };
+  }
+
+  private getCurrentCameraAltitudeM(): number {
+    const camWorld = this.cameraDirector.getCameraWorldPosition();
+    const R = this.currentPlanet.scale.simRadiusM;
+    return Math.max(0, Math.hypot(camWorld.x, camWorld.y + R, camWorld.z) - R);
   }
 
   private detectRendererName(): string {
@@ -430,13 +602,20 @@ export class SceneManager {
 
   private rebuildEnvironmentMap(config: PlanetConfig): void {
     const envScene = new THREE.Scene();
-    const skyGeo = new THREE.SphereGeometry(24, 16, 12);
+    const skyGeo = new THREE.SphereGeometry(24, 24, 16);
+    const sunDir = new THREE.Vector3(
+      config.atmosphere.sunDirection[0],
+      config.atmosphere.sunDirection[1],
+      config.atmosphere.sunDirection[2]
+    ).normalize();
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       uniforms: {
         uTop: { value: new THREE.Color(config.atmosphere.zenithColor) },
         uHorizon: { value: new THREE.Color(config.atmosphere.horizonColor) },
-        uGround: { value: new THREE.Color(config.terrain.soilPalette[2]) },
+        uGround: { value: new THREE.Color(config.lighting.hemiGroundColor) },
+        uSunDir: { value: sunDir },
+        uSunCol: { value: new THREE.Color(config.lighting.sunLightColor) },
       },
       vertexShader: `
         varying vec3 vPos;
@@ -449,11 +628,15 @@ export class SceneManager {
         uniform vec3 uTop;
         uniform vec3 uHorizon;
         uniform vec3 uGround;
+        uniform vec3 uSunDir;
+        uniform vec3 uSunCol;
         varying vec3 vPos;
         void main() {
           vec3 c = vPos.y >= 0.0
             ? mix(uHorizon, uTop, pow(vPos.y, 0.65))
-            : mix(uHorizon * 0.45, uGround, clamp(-vPos.y * 2.0, 0.0, 1.0));
+            : mix(uHorizon * 0.55, uGround, clamp(-vPos.y * 2.0, 0.0, 1.0));
+          float sunGlow = pow(max(dot(vPos, normalize(uSunDir)), 0.0), 18.0) * 0.85;
+          c += uSunCol * sunGlow;
           gl_FragColor = vec4(c, 1.0);
         }
       `,
@@ -497,6 +680,29 @@ export class SceneManager {
   }
 
   private syncVisualsFromTelemetry(tel: FlightTelemetry): void {
+    if (
+      tel.sideBoostersSeparated &&
+      !this.prevSideSeparated &&
+      tel.missionMode === "launch"
+    ) {
+      this.vehicle.triggerSideBoosterSeparation(
+        new THREE.Vector3(
+          tel.sideBoosters.leftPos.x,
+          tel.sideBoosters.leftPos.y,
+          tel.sideBoosters.leftPos.z
+        ),
+        new THREE.Vector3(
+          tel.sideBoosters.rightPos.x,
+          tel.sideBoosters.rightPos.y,
+          tel.sideBoosters.rightPos.z
+        ),
+        tel.sideBoosters.pitch,
+        tel.sideBoosters.yaw,
+        tel.sideBoosters.roll
+      );
+    }
+    this.prevSideSeparated = tel.sideBoostersSeparated;
+
     if (tel.stageSeparated && !this.prevStageSeparated && tel.missionMode === "launch") {
       this.vehicle.triggerStageSeparation(
         new THREE.Vector3(tel.booster.position.x, tel.booster.position.y, tel.booster.position.z),
@@ -528,20 +734,58 @@ export class SceneManager {
       );
     }
 
-    this.vehicle.root.position.set(tel.position.x, tel.position.y, tel.position.z);
+    const origin = this.cameraDirector.getRenderOrigin();
+    this.vehicle.root.position.set(
+      tel.position.x - origin.x,
+      tel.position.y - origin.y,
+      tel.position.z - origin.z
+    );
     this.vehicle.root.rotation.set(tel.roll, tel.yaw, -tel.pitch);
+    this.vehicle.root.updateMatrixWorld(true);
+
+    if (tel.sideBoostersSeparated && tel.missionMode === "launch") {
+      const showSide = tel.sideBoosters.active;
+      this.vehicle.detachedLeftSideRoot.visible = showSide;
+      this.vehicle.detachedRightSideRoot.visible = showSide;
+      if (showSide) {
+        this.vehicle.detachedLeftSideRoot.position.set(
+          tel.sideBoosters.leftPos.x - origin.x,
+          tel.sideBoosters.leftPos.y - origin.y,
+          tel.sideBoosters.leftPos.z - origin.z
+        );
+        this.vehicle.detachedLeftSideRoot.rotation.set(
+          tel.sideBoosters.roll + tel.sideBoosters.spinAngle * 0.45,
+          tel.sideBoosters.yaw,
+          -tel.sideBoosters.pitch - tel.sideBoosters.spinAngle * 0.35
+        );
+        this.vehicle.detachedLeftSideRoot.updateMatrixWorld(true);
+
+        this.vehicle.detachedRightSideRoot.position.set(
+          tel.sideBoosters.rightPos.x - origin.x,
+          tel.sideBoosters.rightPos.y - origin.y,
+          tel.sideBoosters.rightPos.z - origin.z
+        );
+        this.vehicle.detachedRightSideRoot.rotation.set(
+          tel.sideBoosters.roll - tel.sideBoosters.spinAngle * 0.45,
+          tel.sideBoosters.yaw,
+          -tel.sideBoosters.pitch + tel.sideBoosters.spinAngle * 0.35
+        );
+        this.vehicle.detachedRightSideRoot.updateMatrixWorld(true);
+      }
+    }
 
     if (tel.stageSeparated && tel.missionMode === "launch") {
       this.vehicle.detachedBoosterRoot.position.set(
-        tel.booster.position.x,
-        tel.booster.position.y,
-        tel.booster.position.z
+        tel.booster.position.x - origin.x,
+        tel.booster.position.y - origin.y,
+        tel.booster.position.z - origin.z
       );
       this.vehicle.detachedBoosterRoot.rotation.set(
         tel.booster.roll,
         tel.booster.yaw,
         -tel.booster.pitch
       );
+      this.vehicle.detachedBoosterRoot.updateMatrixWorld(true);
     }
 
     this.vehicle.setFrostLevel(tel.frostLevel);
@@ -551,12 +795,14 @@ export class SceneManager {
       tel.stageSeparated ? tel.booster.gridFinYaw : tel.gridFinYaw
     );
     this.vehicle.setLandingLegsDeployed(tel.landingLegsDeployed);
+    this.vehicle.setBoosterLandingLegsDeployed(tel.booster.landingLegsDeployed ?? 0);
     this.vehicle.setEngineVisualState(
       tel.boosterThrottle,
       tel.shipThrottle,
       tel.gimbalX,
       tel.gimbalZ,
-      tel.stageSeparated && tel.booster.active ? tel.booster.throttle : 0
+      tel.stageSeparated && tel.booster.active ? tel.booster.throttle : 0,
+      tel.sideBoosterThrottle
     );
 
     this.launchComplex.setUmbilicalRetracted(tel.umbilicalRetracted);
@@ -564,15 +810,24 @@ export class SceneManager {
     this.launchComplex.setCatchCarriageHeight(tel.catchCarriageY);
   }
 
+  private getMaxPixelRatio(preset: QualityPreset): number {
+    if (preset === "low") return 1.0;
+    if (preset === "med") return 1.25;
+    return 1.75;
+  }
+
   setQualityPreset(preset: QualityPreset): void {
     this.quality = preset;
+    this.autoQualityGuard.resetWindow();
+    const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
     this.propulsionEffects.setQuality(preset);
     this.explosionSystem.setQuality(preset);
     this.postProcessing.setQuality(preset);
-    this.planetGlobe.setQuality(preset, this.renderer.capabilities.getMaxAnisotropy());
+    this.terrainSystem.setQuality(preset, maxAniso);
+    this.coastalEnvironment.setQuality(preset, maxAniso);
+    this.planetGlobe.setQuality(preset, maxAniso);
 
-    const maxPr = preset === "low" ? 1.0 : 2.0;
-    const pr = Math.min(window.devicePixelRatio || 1, maxPr);
+    const pr = Math.min(window.devicePixelRatio || 1, this.getMaxPixelRatio(preset));
     this.renderer.setPixelRatio(pr);
     this.postProcessing.setSize(window.innerWidth, Math.max(1, window.innerHeight), pr);
 
@@ -588,6 +843,21 @@ export class SceneManager {
 
   getQualityPreset(): QualityPreset {
     return this.quality;
+  }
+
+  setAutoQualityEnabled(enabled: boolean): void {
+    this.autoQualityGuard.setEnabled(enabled);
+    this.emitTelemetryNow();
+  }
+
+  isAutoQualityEnabled(): boolean {
+    return this.autoQualityGuard.isEnabled();
+  }
+
+  setAutoQualityStepDownListener(
+    listener: (from: QualityPreset, to: QualityPreset, fps: number) => void
+  ): void {
+    this.onAutoQualityStepDown = listener;
   }
 
   private resetAIContext(planetId: PlanetId, missionMode: MissionMode): void {
@@ -616,44 +886,130 @@ export class SceneManager {
     );
   }
 
-  setPlanet(id: PlanetId): PlanetConfig {
-    if (this.currentPlanet.id === id) {
+  setPlanet(id: PlanetId, siteOverride?: LaunchSiteConfig): PlanetConfig {
+    const targetSite = siteOverride ?? getDefaultLaunchSiteForPlanet(id);
+    if (this.currentPlanet.id === id && this.currentSite.id === targetSite.id) {
       return this.currentPlanet;
     }
+    if (this.currentPlanet.id === id) {
+      this.setLaunchSite(targetSite.id);
+      return this.currentPlanet;
+    }
+
     const next = getPlanetConfig(id);
     this.currentPlanet = next;
+    this.currentSite = targetSite;
     const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
 
-    this.terrainSystem.updatePlanet(next, maxAnisotropy);
+    this.terrainSystem.updatePlanet(next, maxAnisotropy, this.quality, targetSite);
+    this.coastalEnvironment.setPlanet(next, targetSite);
     this.planetGlobe.updatePlanet(next, this.quality, maxAnisotropy);
+    this.planetGlobe.setLaunchSite(targetSite.id, targetSite.latDeg, targetSite.lonDeg);
+    this.earthTileOverlay.setPlanet(next);
+    this.earthTileOverlay.setSiteCoords(targetSite.latDeg, targetSite.lonDeg);
     this.orbitVisualizer.updatePlanet(next);
-    this.launchComplex.updatePlanet(next, maxAnisotropy);
+    this.orbitVisualizer.setSiteShortName(targetSite.shortName);
+    this.orbitalObjects.setPlanet(next, targetSite);
+    this.launchComplex.updatePlanet(next, maxAnisotropy, this.quality, targetSite);
     this.propulsionEffects.setPlanet(next);
     this.explosionSystem.setPlanet(next);
     this.applyPlanetEnvironment(next);
     this.cameraDirector.setPlanetRadius(next.scale.simRadiusM);
 
-    const mission = this.flightController.getTelemetry().missionMode;
+    const rawMission = this.flightController.getTelemetry().missionMode;
+    const mission = !this.currentVehicle.supportsLandingMode && rawMission === "landing" ? "launch" : rawMission;
+    this.vehicle.setVehicle(this.currentVehicle.id, mission);
+    this.propulsionEffects.reconfigureSockets(this.vehicle.getPlumeSocketSpec());
     this.resetAIContext(id, mission);
-    this.flightController.reset(id, this.launchComplex.getPadDeckY(), mission);
+    this.flightController.reset(
+      id,
+      this.launchComplex.getPadDeckY(),
+      mission,
+      this.currentVehicle.id,
+      targetSite.id
+    );
     this.resetMission();
     return next;
   }
 
-  setMissionMode(mode: MissionMode): void {
-    this.resetAIContext(this.currentPlanet.id, mode);
+  setLaunchSite(siteId: LaunchSiteId): LaunchSiteConfig {
+    const nextSite = getLaunchSiteConfig(siteId);
+    if (nextSite.planetId !== this.currentPlanet.id) {
+      this.setPlanet(nextSite.planetId, nextSite);
+      return nextSite;
+    }
+    if (this.currentSite.id === nextSite.id) {
+      return this.currentSite;
+    }
+    this.currentSite = nextSite;
+    const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
+
+    this.planetGlobe.setLaunchSite(nextSite.id, nextSite.latDeg, nextSite.lonDeg);
+    this.earthTileOverlay.setSiteCoords(nextSite.latDeg, nextSite.lonDeg);
+    this.orbitVisualizer.setSiteShortName(nextSite.shortName);
+    this.orbitalObjects.setLaunchSite(nextSite);
+    this.terrainSystem.setLaunchSite(nextSite, maxAnisotropy, this.quality);
+    this.coastalEnvironment.setLaunchSite(nextSite);
+    this.launchComplex.setLaunchSite(nextSite, maxAnisotropy, this.quality);
+    this.flightController.setLaunchSite(nextSite.id, this.launchComplex.getPadDeckY());
+    this.resetMission();
+    this.emitTelemetryNow();
+    return nextSite;
+  }
+
+  getLaunchSite(): LaunchSiteConfig {
+    return this.currentSite;
+  }
+
+  setVehicle(vehicleId: VehicleId): VehicleConfig {
+    const nextVeh = getVehicleConfig(vehicleId);
+    if (this.currentVehicle.id === nextVeh.id) {
+      return this.currentVehicle;
+    }
+    this.currentVehicle = nextVeh;
+
+    let mission = this.flightController.getTelemetry().missionMode;
+    if (!nextVeh.supportsLandingMode && mission === "landing") {
+      mission = "launch";
+      this.resetAIContext(this.currentPlanet.id, mission);
+    }
+
+    this.flightController.setVehicle(nextVeh.id);
     this.flightController.reset(
       this.currentPlanet.id,
       this.launchComplex.getPadDeckY(),
-      mode
+      mission,
+      nextVeh.id,
+      this.currentSite.id
+    );
+    this.vehicle.setVehicle(nextVeh.id, mission);
+    this.propulsionEffects.reconfigureSockets(this.vehicle.getPlumeSocketSpec());
+    this.resetMission();
+    this.emitTelemetryNow();
+    return nextVeh;
+  }
+
+  getVehicle(): VehicleConfig {
+    return this.currentVehicle;
+  }
+
+  setMissionMode(mode: MissionMode): void {
+    const effectiveMode =
+      mode === "landing" && !this.currentVehicle.supportsLandingMode ? "launch" : mode;
+    this.resetAIContext(this.currentPlanet.id, effectiveMode);
+    this.flightController.reset(
+      this.currentPlanet.id,
+      this.launchComplex.getPadDeckY(),
+      effectiveMode,
+      this.currentVehicle.id,
+      this.currentSite.id
     );
     this.flightLog.length = 0;
     this.resetVehicleToFlightState();
-    this.cameraDirector.reLockOnVehicle(
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget(),
-      true
-    );
+    const tel = this.flightController.getTelemetry();
+    this.cameraDirector.reLockOnVehicle(this.buildCameraContext(tel));
+    this.syncFloatingOriginTransforms(tel, this.getCurrentCameraAltitudeM());
+    this.emitTelemetryNow();
   }
 
   setControlMode(mode: ControlMode): void {
@@ -677,25 +1033,100 @@ export class SceneManager {
   // --- Camera & Audio Controls ---
 
   setCameraPreset(preset: CameraPreset): void {
-    this.cameraDirector.setPreset(
-      preset,
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget(),
-      false
+    this.orbitalObjects.setInspectedId(null);
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    this.cameraDirector.setMode(preset, this.buildCameraContext(tel), false);
+    const camAltM = this.getCurrentCameraAltitudeM();
+    this.syncFloatingOriginTransforms(tel, camAltM);
+    this.orbitalObjects.update(
+      0,
+      this.elapsedSec,
+      tel.orbital.timeWarp,
+      false,
+      this.camera,
+      camAltM,
+      this.cameraDirector.getMode(),
+      this.cameraDirector.getRenderOrigin()
     );
+    this.emitTelemetryNow();
   }
 
   getCameraPreset(): CameraPreset {
-    return this.cameraDirector.getPreset();
+    return this.cameraDirector.getMode();
   }
 
   setTrackTarget(target: TrackTarget): void {
-    this.cameraDirector.setTrackTarget(
-      target,
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget()
+    this.orbitalObjects.setInspectedId(null);
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    this.cameraDirector.setTrackTarget(target, this.buildCameraContext(tel));
+    this.syncFloatingOriginTransforms(tel, this.getCurrentCameraAltitudeM());
+    this.emitTelemetryNow();
+  }
+
+  // --- Stage 6D: Explorable Orbital Objects & CelesTrak SGP4 Controls ---
+
+  selectOrbitalObject(id: string): SatelliteStateSnapshot | null {
+    const snap = this.orbitalObjects.setSelectedId(id);
+    this.emitTelemetryNow();
+    return snap;
+  }
+
+  inspectOrbitalObject(id: string): void {
+    this.orbitalObjects.setInspectedId(id);
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    this.cameraDirector.focusOrbitalObject(this.buildCameraContext(tel));
+    const camAltM = this.getCurrentCameraAltitudeM();
+    this.syncFloatingOriginTransforms(tel, camAltM);
+    this.orbitalObjects.update(
+      0,
+      this.elapsedSec,
+      tel.orbital.timeWarp,
+      false,
+      this.camera,
+      camAltM,
+      this.cameraDirector.getMode(),
+      this.cameraDirector.getRenderOrigin()
     );
     this.emitTelemetryNow();
+  }
+
+  returnToVehicleFromOrbital(): void {
+    this.orbitalObjects.setInspectedId(null);
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    this.cameraDirector.reLockOnVehicle(this.buildCameraContext(tel));
+    this.syncFloatingOriginTransforms(tel, this.getCurrentCameraAltitudeM());
+    this.emitTelemetryNow();
+  }
+
+  setOrbitalVisibility(next: Partial<OrbitalVisibilityOptions>): void {
+    this.orbitalObjects.setVisibilityOptions(next);
+    this.emitTelemetryNow();
+  }
+
+  async refreshCelesTrakData(force = true): Promise<OrbitalProvenanceSummary> {
+    const summary = await this.orbitalObjects.refreshLiveData(force);
+    this.emitTelemetryNow();
+    return summary;
+  }
+
+  getOrbitalStateSnapshot(): {
+    objects: readonly SatelliteStateSnapshot[];
+    selectedId: string;
+    inspectedId: string | null;
+    provenance: OrbitalProvenanceSummary;
+    visibility: OrbitalVisibilityOptions;
+  } {
+    return {
+      objects: this.orbitalObjects.getSnapshots(),
+      selectedId: this.orbitalObjects.getSelectedId(),
+      inspectedId: this.orbitalObjects.getInspectedId(),
+      provenance: this.orbitalObjects.getProvenance(),
+      visibility: this.orbitalObjects.getVisibilityOptions(),
+    };
   }
 
   getTrackTarget(): TrackTarget {
@@ -703,7 +1134,20 @@ export class SceneManager {
   }
 
   setAutoDirector(enabled: boolean): void {
-    this.cameraDirector.setAutoDirector(enabled);
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    this.cameraDirector.setAutoDirector(enabled, this.buildCameraContext(tel));
+    this.syncFloatingOriginTransforms(tel, this.getCurrentCameraAltitudeM());
+    this.emitTelemetryNow();
+  }
+
+  toggleAutoDirector(): boolean {
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    const next = this.cameraDirector.toggleAutoDirector(this.buildCameraContext(tel));
+    this.syncFloatingOriginTransforms(tel, this.getCurrentCameraAltitudeM());
+    this.emitTelemetryNow();
+    return next;
   }
 
   getAutoDirector(): boolean {
@@ -716,6 +1160,10 @@ export class SceneManager {
 
   isAudioMuted(): boolean {
     return this.soundEngine.isMuted();
+  }
+
+  isGibsTilesLoaded(): boolean {
+    return this.earthTileOverlay.isLoaded();
   }
 
   setOrbitPathEnabled(enabled: boolean): void {
@@ -1016,7 +1464,9 @@ export class SceneManager {
     this.flightController.reset(
       this.currentPlanet.id,
       this.launchComplex.getPadDeckY(),
-      mission
+      mission,
+      this.currentVehicle.id,
+      this.currentSite.id
     );
     this.flightController.setControlMode("ai_ppo");
     this.flightController.setFaultConfig(this.faultConfig);
@@ -1030,9 +1480,7 @@ export class SceneManager {
     this.flightLog.length = 0;
     this.resetVehicleToFlightState();
     this.cameraDirector.reLockOnVehicle(
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget(),
-      true
+      this.buildCameraContext(this.flightController.getTelemetry())
     );
 
     this.liveEpActive = true;
@@ -1179,6 +1627,7 @@ export class SceneManager {
   }
 
   private emitTelemetryNow(): void {
+    const camState = this.cameraDirector.getState();
     this.onTelemetry?.({
       fps: this.currentFps,
       rendererName: this.rendererName,
@@ -1187,14 +1636,109 @@ export class SceneManager {
       canvasNonBlackPct: this.canvasNonBlackPct,
       canvasMeanRgb: this.canvasMeanRgb,
       quality: this.quality,
-      cameraPreset: this.cameraDirector.getPreset(),
-      trackTarget: this.cameraDirector.getTrackTarget(),
-      autoDirector: this.cameraDirector.getAutoDirector(),
+      autoQualityEnabled: this.autoQualityGuard.isEnabled(),
+      launchSiteId: this.currentSite.id,
+      vehicleId: this.currentVehicle.id,
+      cameraPreset: camState.mode,
+      trackTarget: camState.trackTarget,
+      autoDirector: camState.autoDirector,
+      padRangeHint: camState.padRangeHint,
       audioMuted: this.soundEngine.isMuted(),
       orbitPathEnabled: this.orbitVisualizer.isEnabled(),
+      gibsTilesLoaded: this.earthTileOverlay.isLoaded(),
+      orbitalObjects: this.orbitalObjects.getSnapshots(),
+      selectedOrbitalId: this.orbitalObjects.getSelectedId(),
+      inspectedOrbitalId: this.orbitalObjects.getInspectedId(),
+      orbitalProvenance: this.orbitalObjects.getProvenance(),
+      orbitalVisibility: this.orbitalObjects.getVisibilityOptions(),
       flight: this.flightController.getTelemetry(),
       ai: this.getAIStatus(),
     });
+  }
+
+  probeCanvasNonBlackNow(): { pct: number; meanRgb: [number, number, number] } {
+    try {
+      this.renderCurrentCameraFrameNow();
+      const gl = this.renderer.getContext();
+      const bufW = gl.drawingBufferWidth;
+      const bufH = gl.drawingBufferHeight;
+      if (bufW < 32 || bufH < 32) {
+        return { pct: this.canvasNonBlackPct, meanRgb: this.canvasMeanRgb };
+      }
+      const patchSize = 16;
+      const centers = [
+        [0.5, 0.5],
+        [0.3, 0.35],
+        [0.7, 0.35],
+        [0.3, 0.65],
+        [0.7, 0.65],
+      ];
+      const pixels = new Uint8Array(patchSize * patchSize * 4);
+      let nonBlack = 0;
+      let total = 0;
+      let rSum = 0;
+      let gSum = 0;
+      let bSum = 0;
+      for (const [fx, fy] of centers) {
+        const x = Math.max(0, Math.min(bufW - patchSize, Math.floor(bufW * fx - patchSize / 2)));
+        const y = Math.max(0, Math.min(bufH - patchSize, Math.floor(bufH * fy - patchSize / 2)));
+        gl.readPixels(x, y, patchSize, patchSize, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        for (let i = 0; i < pixels.length; i += 4) {
+          const r = pixels[i];
+          const g = pixels[i + 1];
+          const b = pixels[i + 2];
+          rSum += r;
+          gSum += g;
+          bSum += b;
+          total += 1;
+          if (r > 10 || g > 12 || b > 14) {
+            nonBlack += 1;
+          }
+        }
+      }
+      return {
+        pct: total > 0 ? Number(((nonBlack / total) * 100).toFixed(1)) : 0,
+        meanRgb:
+          total > 0
+            ? [
+              Number((rSum / total).toFixed(1)),
+              Number((gSum / total).toFixed(1)),
+              Number((bSum / total).toFixed(1)),
+            ]
+            : [0, 0, 0],
+      };
+    } catch {
+      return { pct: this.canvasNonBlackPct, meanRgb: this.canvasMeanRgb };
+    }
+  }
+
+  private renderCurrentCameraFrameNow(): void {
+    const tel = this.flightController.getTelemetry();
+    const camAltM = this.getCurrentCameraAltitudeM();
+    const R = this.currentPlanet.scale.simRadiusM;
+    const atmoTopM = this.currentPlanet.scale.atmosphereTopM;
+    const origin = this.cameraDirector.getRenderOrigin();
+
+    this.syncVisualsFromTelemetry(tel);
+    this.syncFloatingOriginTransforms(tel, camAltM);
+    this.atmosphereDome.update(0, this.camera.position, camAltM, atmoTopM);
+    this.planetGlobe.update(0, camAltM);
+    this.earthTileOverlay.update(camAltM);
+    this.terrainSystem.setVisibilityForCameraAltitude(camAltM, R);
+    this.coastalEnvironment.update(0, this.elapsedSec, camAltM, tel);
+    this.orbitVisualizer.update(tel, this.camera, camAltM, origin);
+    this.orbitalObjects.update(
+      0,
+      this.elapsedSec,
+      tel.orbital.timeWarp,
+      false,
+      this.camera,
+      camAltM,
+      this.cameraDirector.getMode(),
+      origin
+    );
+    this.camera.updateMatrixWorld();
+    this.postProcessing.render(this.scene, this.camera);
   }
 
   private sampleRenderedPixelsOnce(): void {
@@ -1236,7 +1780,9 @@ export class SceneManager {
         Number((gSum / total).toFixed(1)),
         Number((bSum / total).toFixed(1)),
       ];
-      this.pixelProbeDone = true;
+      if (nonBlack > 0 || this.renderedFrames >= 45) {
+        this.pixelProbeDone = true;
+      }
       this.emitTelemetryNow();
     } catch {
       this.pixelProbeDone = true;
@@ -1258,11 +1804,10 @@ export class SceneManager {
     }
     this.flightLog.length = 0;
     this.flightController.startMission();
-    this.cameraDirector.reLockOnVehicle(
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget(),
-      false
-    );
+    const postTel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(postTel);
+    this.cameraDirector.reLockOnVehicle(this.buildCameraContext(postTel));
+    this.syncFloatingOriginTransforms(postTel, this.getCurrentCameraAltitudeM());
   }
 
   togglePause(): boolean {
@@ -1287,20 +1832,21 @@ export class SceneManager {
     this.flightController.reset(
       this.currentPlanet.id,
       this.launchComplex.getPadDeckY(),
-      tel.missionMode
+      tel.missionMode,
+      this.currentVehicle.id,
+      this.currentSite.id
     );
     this.flightController.setFaultConfig(this.faultConfig);
     this.resetVehicleToFlightState();
-    this.cameraDirector.reLockOnVehicle(
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget(),
-      true
-    );
+    const postTel = this.flightController.getTelemetry();
+    this.cameraDirector.reLockOnVehicle(this.buildCameraContext(postTel));
+    this.syncFloatingOriginTransforms(postTel, this.getCurrentCameraAltitudeM());
   }
 
   private resetVehicleToFlightState(): void {
     const tel = this.flightController.getTelemetry();
     this.prevStageSeparated = false;
+    this.prevSideSeparated = false;
     this.vehicleIntact = true;
     this.lastCrashId = -1;
     this.lastBoosterCrashId = -1;
@@ -1313,11 +1859,10 @@ export class SceneManager {
   }
 
   setFocusMode(focus: CameraFocusMode): void {
-    this.cameraDirector.setFocusMode(
-      focus,
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget()
-    );
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    this.cameraDirector.setFocusMode(focus, this.buildCameraContext(tel));
+    this.syncFloatingOriginTransforms(tel, this.getCurrentCameraAltitudeM());
   }
 
   getFocusMode(): CameraFocusMode {
@@ -1344,18 +1889,18 @@ export class SceneManager {
   }
 
   resetCamera(): void {
-    this.cameraDirector.reLockOnVehicle(
-      this.flightController.getTelemetry(),
-      this.launchComplex.getBaseFocusTarget(),
-      false
-    );
+    this.orbitalObjects.setInspectedId(null);
+    const tel = this.flightController.getTelemetry();
+    this.syncVisualsFromTelemetry(tel);
+    this.cameraDirector.reLockOnVehicle(this.buildCameraContext(tel));
+    this.syncFloatingOriginTransforms(tel, this.getCurrentCameraAltitudeM());
+    this.emitTelemetryNow();
   }
 
   private readonly handleResize = (): void => {
     const width = window.innerWidth;
     const height = Math.max(1, window.innerHeight);
-    const maxPr = this.quality === "low" ? 1.0 : 2.0;
-    const pr = Math.min(window.devicePixelRatio || 1, maxPr);
+    const pr = Math.min(window.devicePixelRatio || 1, this.getMaxPixelRatio(this.quality));
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(pr);
@@ -1403,6 +1948,43 @@ export class SceneManager {
     }
   }
 
+  private syncFloatingOriginTransforms(tel: FlightTelemetry, camAltM: number): void {
+    const origin = this.cameraDirector.getRenderOrigin();
+    this.planetGlobe.setRenderOrigin(origin);
+    this.terrainSystem.group.position.set(-origin.x, -origin.y, -origin.z);
+    this.coastalEnvironment.group.position.set(-origin.x, -origin.y, -origin.z);
+    this.earthTileOverlay.group.position.set(-origin.x, -origin.y, -origin.z);
+    this.launchComplex.group.position.set(-origin.x, -origin.y, -origin.z);
+    this.launchComplex.setVisibilityForCameraAltitude(camAltM);
+    this.propulsionEffects.worldGroup.position.set(-origin.x, -origin.y, -origin.z);
+    this.explosionSystem.group.position.set(-origin.x, -origin.y, -origin.z);
+
+    this.vehicle.root.position.set(
+      tel.position.x - origin.x,
+      tel.position.y - origin.y,
+      tel.position.z - origin.z
+    );
+    if (tel.sideBoostersSeparated && tel.missionMode === "launch" && tel.sideBoosters.active) {
+      this.vehicle.detachedLeftSideRoot.position.set(
+        tel.sideBoosters.leftPos.x - origin.x,
+        tel.sideBoosters.leftPos.y - origin.y,
+        tel.sideBoosters.leftPos.z - origin.z
+      );
+      this.vehicle.detachedRightSideRoot.position.set(
+        tel.sideBoosters.rightPos.x - origin.x,
+        tel.sideBoosters.rightPos.y - origin.y,
+        tel.sideBoosters.rightPos.z - origin.z
+      );
+    }
+    if (tel.stageSeparated && tel.missionMode === "launch") {
+      this.vehicle.detachedBoosterRoot.position.set(
+        tel.booster.position.x - origin.x,
+        tel.booster.position.y - origin.y,
+        tel.booster.position.z - origin.z
+      );
+    }
+  }
+
   private readonly animate = (): void => {
     if (this.disposed) {
       return;
@@ -1430,10 +2012,19 @@ export class SceneManager {
     this.explosionSystem.update(dt);
     this.launchComplex.update(this.elapsedSec);
 
-    this.cameraDirector.update(dt, tel, this.launchComplex.getBaseFocusTarget());
+    this.cameraDirector.update(dt, this.buildCameraContext(tel));
+    const origin = this.cameraDirector.getRenderOrigin();
+    const camWorld = this.cameraDirector.getCameraWorldPosition();
+    const R = this.currentPlanet.scale.simRadiusM;
+    const atmoTopM = this.currentPlanet.scale.atmosphereTopM;
+    const camAltM = Math.max(0, Math.hypot(camWorld.x, camWorld.y + R, camWorld.z) - R);
 
-    const camDist = this.camera.position.distanceTo(
-      new THREE.Vector3(tel.position.x, tel.position.y, tel.position.z)
+    this.syncFloatingOriginTransforms(tel, camAltM);
+
+    const camDist = Math.hypot(
+      camWorld.x - tel.position.x,
+      camWorld.y - tel.position.y,
+      camWorld.z - tel.position.z
     );
     this.soundEngine.update(
       tel,
@@ -1442,22 +2033,24 @@ export class SceneManager {
       this.vehicleIntact
     );
 
-    const R = this.currentPlanet.scale.simRadiusM;
-    const atmoTopM = this.currentPlanet.scale.atmosphereTopM;
-    const camPos = this.camera.position;
-    const camAltM = Math.max(0, Math.hypot(camPos.x, camPos.y + R, camPos.z) - R);
-
-    // Attenuate atmospheric ground fog strictly to 0 above 3.5 km to eliminate mid-altitude whiteout
+    // Attenuate atmospheric ground fog cleanly above 14 km into dark stratosphere
     if (this.scene.fog instanceof THREE.FogExp2) {
       const baseFog = this.currentPlanet.atmosphere.fogDensity;
-      const fogT = atmoTopM > 0 ? 1 - smoothstep(400, 3500, camAltM) : 0;
+      const fogT = atmoTopM > 0 ? 1 - smoothstep(2000, 14000, camAltM) : 0;
       this.scene.fog.density = baseFog * fogT * fogT;
     }
 
-    this.sunLight.castShadow = camAltM < 4000;
+    this.sunLight.castShadow = camAltM < 4500;
+    this.sunLight.target.position.set(
+      tel.position.x - origin.x,
+      tel.position.y - origin.y,
+      tel.position.z - origin.z
+    );
+    this.sunLight.target.updateMatrixWorld();
     this.sunLight.position
       .copy(this.sunDirVec)
-      .multiplyScalar(camAltM < 4000 ? 320 : R * 6);
+      .multiplyScalar(camAltM < 4500 ? 320 : R * 2)
+      .add(this.sunLight.target.position);
 
     // Apply transient camera shake around CameraDirector position, then restore cleanly
     this.explosionSystem.getCameraShakeOffset(this.shakeOffset);
@@ -1467,7 +2060,7 @@ export class SceneManager {
     // Project active nozzle exit to screen UV for Schlieren heat distortion pass
     const activeThr = Math.max(tel.boosterThrottle, tel.shipThrottle);
     if (this.vehicleIntact && activeThr > 0.05) {
-      this.projVec.set(tel.position.x, tel.position.y, tel.position.z).project(this.camera);
+      this.projVec.copy(this.vehicle.root.position).project(this.camera);
       const uvX = this.projVec.x * 0.5 + 0.5;
       const uvY = this.projVec.y * 0.5 + 0.5;
       const distFactor = Math.max(0, Math.min(1, 220 / Math.max(40, camDist)));
@@ -1484,8 +2077,20 @@ export class SceneManager {
 
     this.atmosphereDome.update(dt, this.camera.position, camAltM, atmoTopM);
     this.planetGlobe.update(dt, camAltM);
+    this.earthTileOverlay.update(camAltM);
     this.terrainSystem.setVisibilityForCameraAltitude(camAltM, R);
-    this.orbitVisualizer.update(tel, this.camera, camAltM);
+    this.coastalEnvironment.update(dt, this.elapsedSec, camAltM, tel);
+    this.orbitVisualizer.update(tel, this.camera, camAltM, origin);
+    this.orbitalObjects.update(
+      dt,
+      this.elapsedSec,
+      tel.orbital.timeWarp,
+      tel.running && !tel.paused,
+      this.camera,
+      camAltM,
+      this.cameraDirector.getMode(),
+      origin
+    );
     this.postProcessing.render(this.scene, this.camera);
     this.renderedFrames += 1;
     if (!this.pixelProbeDone && this.renderedFrames >= 8) {
@@ -1496,9 +2101,20 @@ export class SceneManager {
     this.fpsAccumTime += dt;
     this.fpsFrameCount += 1;
     if (this.fpsAccumTime >= 0.25) {
-      this.currentFps = Math.round(this.fpsFrameCount / this.fpsAccumTime);
+      const sampleDt = this.fpsAccumTime;
+      this.currentFps = Math.round(this.fpsFrameCount / sampleDt);
       this.fpsAccumTime = 0;
       this.fpsFrameCount = 0;
+      const nextQual = this.autoQualityGuard.sample(
+        this.currentFps,
+        sampleDt,
+        this.quality
+      );
+      if (nextQual && nextQual !== this.quality) {
+        const prevQual = this.quality;
+        this.setQualityPreset(nextQual);
+        this.onAutoQualityStepDown?.(prevQual, nextQual, this.currentFps);
+      }
       this.emitTelemetryNow();
     }
   };
@@ -1508,13 +2124,18 @@ export class SceneManager {
     this.workerClient.dispose();
     this.soundEngine.dispose();
     window.cancelAnimationFrame(this.rafId);
+    this.canvas.removeEventListener("pointerdown", this.handleCanvasPointerDown);
+    this.canvas.removeEventListener("pointerup", this.handleCanvasPointerUp);
     window.removeEventListener("resize", this.handleResize);
 
     this.cameraDirector.dispose();
     this.atmosphereDome.dispose();
     this.planetGlobe.dispose();
+    this.earthTileOverlay.dispose();
     this.orbitVisualizer.dispose();
+    this.orbitalObjects.dispose();
     this.terrainSystem.dispose();
+    this.coastalEnvironment.dispose();
     this.launchComplex.dispose();
     this.vehicle.dispose();
     this.propulsionEffects.dispose();

@@ -8,29 +8,32 @@ import {
 } from "../scene/earthGeography";
 import { computeCurvedSurfaceDrop, computeSphereDrop } from "../utils/noise";
 
-describe("Milestone 5 Stage 5A — Planetary Scale, Curvature & Geography", () => {
-  it("defines valid 1:50 planetary scale parameters ordered Moon < Mars < Earth", () => {
+describe("True 1:1 Real-Scale Planetary Scale, Curvature & Geography", () => {
+  it("defines true 1:1 planetary radii ordered Moon < Mars < Earth with 100+ km atmospheres", () => {
     const moon = getPlanetConfig("moon");
     const mars = getPlanetConfig("mars");
     const earth = getPlanetConfig("earth");
 
     for (const id of PLANET_ORDER) {
       const cfg = getPlanetConfig(id);
-      expect(cfg.scale.simScaleRatio).toBe(50);
-      expect(cfg.scale.simRadiusM).toBeCloseTo((cfg.scale.realRadiusKm * 1000) / 50, 2);
+      expect(cfg.scale.simScaleRatio).toBe(1);
+      expect(cfg.scale.simRadiusM).toBeCloseTo(cfg.scale.realRadiusKm * 1000, 2);
       expect(cfg.scale.localTerrainRadiusM).toBeGreaterThanOrEqual(10_000);
-      expect(cfg.scale.localTerrainRadiusM).toBeLessThanOrEqual(cfg.scale.simRadiusM * 0.45);
+      expect(cfg.scale.localTerrainRadiusM).toBeLessThanOrEqual(cfg.scale.simRadiusM * 0.05);
       expect(cfg.scale.targetOrbitAltM).toBeGreaterThan(cfg.scale.atmosphereTopM);
     }
 
-    expect(moon.scale.simRadiusM).toBeLessThan(mars.scale.simRadiusM);
-    expect(mars.scale.simRadiusM).toBeLessThan(earth.scale.simRadiusM);
+    expect(earth.scale.simRadiusM).toBe(6_371_000);
+    expect(earth.scale.atmosphereTopM).toBe(120_000);
+    expect(earth.scale.targetOrbitAltM).toBe(200_000);
+    expect(mars.scale.simRadiusM).toBe(3_389_500);
+    expect(mars.scale.atmosphereTopM).toBe(90_000);
+    expect(moon.scale.simRadiusM).toBe(1_737_400);
     expect(moon.scale.atmosphereTopM).toBe(0);
-    expect(mars.scale.atmosphereTopM).toBeGreaterThan(0);
-    expect(earth.scale.atmosphereTopM).toBeGreaterThan(mars.scale.atmosphereTopM);
+    expect(moon.scale.targetOrbitAltM).toBe(100_000);
   });
 
-  it("preserves flat pad apron, <0.5 m curvature inside +/-250 m PPO zone, and exact spherical drop beyond", () => {
+  it("preserves flat pad apron, <0.01 m 1:1 curvature inside +/-250 m PPO zone, and exact spherical drop beyond", () => {
     for (const id of PLANET_ORDER) {
       const { simRadiusM } = getPlanetConfig(id).scale;
 
@@ -38,8 +41,8 @@ describe("Milestone 5 Stage 5A — Planetary Scale, Curvature & Geography", () =
       expect(computeCurvedSurfaceDrop(0, simRadiusM)).toBe(0);
       expect(computeCurvedSurfaceDrop(65, simRadiusM)).toBe(0);
 
-      // Ensure PPO landing spawn box (+/-250 m) has negligible curvature offset (<0.5 m)
-      expect(Math.abs(computeCurvedSurfaceDrop(250, simRadiusM))).toBeLessThan(0.5);
+      // True 1:1 curvature over +/-250 m landing zone is negligible (<0.01 m)
+      expect(Math.abs(computeCurvedSurfaceDrop(250, simRadiusM))).toBeLessThan(0.01);
 
       const d1000 = computeSphereDrop(1000, simRadiusM);
       const d5000 = computeSphereDrop(5000, simRadiusM);
