@@ -5,35 +5,37 @@ Measured directly inside the built Electron desktop application via `npm run pro
 ---
 
 ## Test Environment & Hardware Scope
-- **Measured At (UTC):** `2026-11-26T07:05:27.717Z`
+- **Measured At (UTC):** `2026-11-26T08:37:21.564Z`
 - **OS / Architecture:** `Windows_NT 10.0.26300 (x64)`
-- **CPU:** `AMD Ryzen 5 5600H with Radeon Graphics` (`12` logical cores)
+- **CPU:** `AMD Ryzen 5 5600H` (`12` logical cores)
 - **System Memory:** `7.3 GB`
-- **WebGL GPU Renderer:** `ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001638) Direct3D11 vs_5_0 ps_5_0, D3D11)`
+- **Active GPU:** `NVIDIA GeForce GTX 1650` (`tier: dgpu`, `hybridOnIgpu: false`)
+- **Raw WebGL Renderer:** `ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 (0x00001F99) Direct3D11 vs_5_0 ps_5_0, D3D11)`
+- **Loaded Hero GLB Assets / VRAM Est.:** `2` models / `75.9 MB`
 - **Viewport Resolution:** `1426x779`
 - **Sampling Protocol:** `3,000 ms` live `requestAnimationFrame` delta sampling after `600 ms` planet/quality settle across all 9 `(Planet × Quality)` combinations.
 
 > [!NOTE]
-> Performance numbers below are specific to the integrated GPU hardware above and are **not** claimed as universal across all GPUs. Discrete GPUs (e.g., GTX 1650 / RTX-class) will exhibit proportionally lower frame times under `MED` / `HIGH` post-processing.
+> Measured on discrete GPU (`NVIDIA GeForce GTX 1650`) with hardware-accelerated WebGL2 and Cascaded Shadow Maps (`LOW`: 1×, `MED`: 2×, `HIGH`: 3×).
 
 ---
 
 ## Measured Desktop Telemetry Matrix
 
-| Planet | Quality | Avg FPS | p50 Frame (ms) | p95 Frame (ms) | Draw Calls | Triangles | JS Heap (MB) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **MARS** | `LOW` | **52.2** | 16.70 ms | 16.80 ms | 107 | 85,360 | 61.0 MB |
-| **MARS** | `MED` | **57.7** | 16.70 ms | 17.00 ms | 121 | 111,614 | 61.0 MB |
-| **MARS** | `HIGH` | **33.6** | 33.30 ms | 33.50 ms | 121 | 148,094 | 61.0 MB |
-| **EARTH** | `LOW` | **57.1** | 16.70 ms | 17.00 ms | 128 | 96,330 | 61.0 MB |
-| **EARTH** | `MED` | **56.8** | 16.70 ms | 16.90 ms | 142 | 129,190 | 61.0 MB |
-| **EARTH** | `HIGH` | **26.0** | 33.40 ms | 83.30 ms | 142 | 165,670 | 61.0 MB |
-| **MOON** | `LOW` | **53.4** | 16.70 ms | 16.80 ms | 109 | 83,768 | 61.0 MB |
-| **MOON** | `MED` | **59.8** | 16.70 ms | 16.90 ms | 123 | 110,022 | 61.0 MB |
-| **MOON** | `HIGH` | **37.1** | 33.10 ms | 33.50 ms | 123 | 146,502 | 61.0 MB |
+| Planet | Quality | Avg FPS | p50 Frame (ms) | p95 Frame (ms) | Draw Calls | Triangles | Shadows | JS Heap (MB) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **MARS** | `LOW` | **55.3** | 16.70 ms | 16.80 ms | 107 | 85,360 | 1× CSM | 57.5 MB |
+| **MARS** | `MED` | **60.1** | 16.70 ms | 16.90 ms | 147 | 124,318 | 2× CSM | 57.5 MB |
+| **MARS** | `HIGH` | **60.2** | 16.70 ms | 16.80 ms | 173 | 173,502 | 3× CSM | 57.5 MB |
+| **EARTH** | `LOW` | **57.8** | 16.70 ms | 16.90 ms | 134 | 97,114 | 1× CSM | 57.5 MB |
+| **EARTH** | `MED` | **59.7** | 16.70 ms | 17.00 ms | 198 | 139,010 | 2× CSM | 57.5 MB |
+| **EARTH** | `HIGH` | **59.9** | 16.70 ms | 16.90 ms | 254 | 185,310 | 3× CSM | 57.5 MB |
+| **MOON** | `LOW` | **54.0** | 16.70 ms | 17.00 ms | 109 | 83,768 | 1× CSM | 57.5 MB |
+| **MOON** | `MED` | **59.9** | 16.70 ms | 17.00 ms | 146 | 120,634 | 2× CSM | 57.5 MB |
+| **MOON** | `HIGH` | **60.2** | 16.70 ms | 16.80 ms | 170 | 167,790 | 3× CSM | 57.5 MB |
 
 ---
 
 ## Observations
-- **Quality Scaling:** `LOW` bypasses `EffectComposer` (`UnrealBloomPass` + `SchlierenHeatShader`) and drops shadow map resolution from `2048×2048` to `1024×1024`, delivering lower frame times on integrated GPUs.
+- **Quality & Shadow Scaling:** `LOW` uses a single `1024×1024` texel-snapped directional shadow map and bypasses `EffectComposer` bloom; `MED` enables 2-cascade CSM (`2048` + `1024`); `HIGH` enables full 3-cascade CSM (`2048` + `2048` + `1024`) up to `6 km`. All cascades auto-disable cleanly above `15 km` camera altitude.
 - **Console / WebGL Errors:** `0` errors, `0` warnings.

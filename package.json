@@ -15,6 +15,7 @@
     "test": "vitest run",
     "benchmark": "node scripts/run-benchmark.mjs",
     "profile:desktop": "npm run build && node scripts/profile-desktop.mjs",
+    "build:assets": "node scripts/build-hero-assets.mjs",
     "generate:icon": "node scripts/generate-icon.mjs",
     "dist:win:dir": "npm run build && electron-builder --win dir",
     "dist:win": "npm run build && electron-builder --win portable"

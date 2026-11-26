@@ -1,5 +1,6 @@
 import type { LaunchSiteId } from "../config/launchSites";
 import type { VehicleId } from "../config/vehicles";
+import type { GpuTier, GpuTierTag, SystemHardwareInfo } from "../utils/hardwareInfo";
 
 export interface DesktopAppBridge {
   isElectron: boolean;
@@ -9,6 +10,11 @@ export interface DesktopAppBridge {
     chrome: string;
     node: string;
   };
+}
+
+export interface AetherDesktopBridge {
+  isElectron: boolean;
+  getSystemHardware: () => Promise<SystemHardwareInfo>;
 }
 
 export interface SimDiagnostics {
@@ -26,6 +32,17 @@ export interface SimDiagnostics {
   crashed: boolean;
   fps: number;
   rendererName: string;
+  cpuModel?: string;
+  cpuCores?: number;
+  totalRamGb?: number;
+  gpuShortName?: string;
+  gpuTier?: GpuTier;
+  gpuTag?: GpuTierTag;
+  isHybridOnIgpu?: boolean;
+  detectedDiscreteGpuName?: string | null;
+  estimatedVramMB?: number;
+  glbLoadedCount?: number;
+  shadowCascades?: number;
   isElectron: boolean;
   drawCalls: number;
   triangles: number;
@@ -60,6 +77,14 @@ export interface ProfilerSampleResult {
   drawCalls: number;
   triangles: number;
   rendererName: string;
+  cpuModel: string;
+  cpuCores: number;
+  gpuShortName: string;
+  gpuTier: GpuTier;
+  isHybridOnIgpu: boolean;
+  estimatedVramMB: number;
+  glbLoadedCount: number;
+  shadowCascades: number;
   jsHeapUsedMB: number | null;
   canvasWidth: number;
   canvasHeight: number;
@@ -86,6 +111,7 @@ export interface AetherSimProfilerApi {
 declare global {
   interface Window {
     desktopApp?: DesktopAppBridge;
+    aetherDesktop?: AetherDesktopBridge;
     __AETHERSIM_BOOT_ID__?: string;
     __STARSHIP_SIM__?: SimDiagnostics;
     __AETHERSIM_PROFILER__?: AetherSimProfilerApi;

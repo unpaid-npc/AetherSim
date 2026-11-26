@@ -46,6 +46,11 @@ import {
 import { ExplosionSystem } from "../effects/ExplosionSystem";
 import { PropulsionEffects, type QualityPreset } from "../effects/PropulsionEffects";
 import { AutoQualityGuard } from "../ui/uiGuards";
+import {
+  type ResolvedHardwareDiagnostics,
+  type SystemHardwareInfo,
+  resolveHardwareDiagnostics,
+} from "../utils/hardwareInfo";
 import { smoothstep } from "../utils/noise";
 import type { FlightLogSample } from "../research/DataExporter";
 import type { MonteCarloPilot, MonteCarloSummary } from "../research/MonteCarloRunner";
@@ -64,6 +69,7 @@ import {
   type MissionMode,
   type TimeWarp,
 } from "../sim/FlightController";
+import { AssetPipeline } from "./AssetPipeline";
 import {
   CameraDirector,
   type CameraDirectorState,
@@ -87,6 +93,7 @@ import type {
 import { PlanetGlobe } from "./PlanetGlobe";
 import { PostProcessingPipeline } from "./PostProcessing";
 import { disposeVehicleTextureCache } from "./ProceduralTextures";
+import { ShadowSystem } from "./ShadowSystem";
 import { StarshipVehicle } from "./StarshipVehicle";
 import { TerrainSystem } from "./TerrainSystem";
 
@@ -119,6 +126,7 @@ export interface AIStatusSnapshot {
 export interface SceneTelemetry {
   fps: number;
   rendererName: string;
+  hardware: ResolvedHardwareDiagnostics;
   drawCalls: number;
   triangles: number;
   canvasNonBlackPct: number;
@@ -158,10 +166,12 @@ export class SceneManager {
   private readonly cameraDirector: CameraDirector;
   private readonly soundEngine: SoundEngine;
 
-  private readonly sunLight: THREE.DirectionalLight;
+  private readonly shadowSystem: ShadowSystem;
+  private readonly assetPipeline: AssetPipeline;
   private readonly hemiLight: THREE.HemisphereLight;
   private readonly pmremGenerator: THREE.PMREMGenerator;
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
+  private systemHardwareInfo: SystemHardwareInfo | null = null;
 
   private readonly atmosphereDome: AtmosphereDome;
   private readonly planetGlobe: PlanetGlobe;
@@ -398,17 +408,8 @@ export class SceneManager {
     this.cameraDirector.setPlanetRadius(this.currentPlanet.scale.simRadiusM);
     this.soundEngine = new SoundEngine();
 
-    this.sunLight = new THREE.DirectionalLight("#ffffff", 3.0);
-    this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.set(2048, 2048);
-    this.sunLight.shadow.camera.near = 10;
-    this.sunLight.shadow.camera.far = 900;
-    this.sunLight.shadow.camera.left = -220;
-    this.sunLight.shadow.camera.right = 220;
-    this.sunLight.shadow.camera.top = 240;
-    this.sunLight.shadow.camera.bottom = -160;
-    this.sunLight.shadow.bias = -0.0005;
-    this.scene.add(this.sunLight, this.sunLight.target);
+    this.shadowSystem = new ShadowSystem(this.scene, this.quality);
+    this.assetPipeline = new AssetPipeline(this.renderer);
 
     this.hemiLight = new THREE.HemisphereLight("#ffffff", "#222222", 0.6);
     this.scene.add(this.hemiLight);
@@ -428,7 +429,9 @@ export class SceneManager {
       this.currentPlanet,
       this.quality,
       maxAnisotropy,
-      this.currentSite
+      this.currentSite,
+      this.assetPipeline,
+      () => this.emitTelemetryNow()
     );
     this.planetGlobe = new PlanetGlobe(
       this.currentPlanet,
@@ -661,9 +664,11 @@ export class SceneManager {
       .set(atmosphere.sunDirection[0], atmosphere.sunDirection[1], atmosphere.sunDirection[2])
       .normalize();
 
-    this.sunLight.position.copy(this.sunDirVec).multiplyScalar(320);
-    this.sunLight.color.set(lighting.sunLightColor);
-    this.sunLight.intensity = lighting.sunLightIntensity;
+    this.shadowSystem.setPlanetLighting(
+      this.sunDirVec,
+      lighting.sunLightColor,
+      lighting.sunLightIntensity
+    );
 
     this.hemiLight.color.set(lighting.hemiSkyColor);
     this.hemiLight.groundColor.set(lighting.hemiGroundColor);
@@ -831,14 +836,7 @@ export class SceneManager {
     this.renderer.setPixelRatio(pr);
     this.postProcessing.setSize(window.innerWidth, Math.max(1, window.innerHeight), pr);
 
-    const shadowRes = preset === "low" ? 1024 : 2048;
-    if (this.sunLight.shadow.mapSize.x !== shadowRes) {
-      this.sunLight.shadow.mapSize.set(shadowRes, shadowRes);
-      if (this.sunLight.shadow.map) {
-        this.sunLight.shadow.map.dispose();
-        this.sunLight.shadow.map = null;
-      }
-    }
+    this.shadowSystem.setQuality(preset);
   }
 
   getQualityPreset(): QualityPreset {
@@ -1626,11 +1624,43 @@ export class SceneManager {
     }
   }
 
+  setSystemHardwareInfo(info: SystemHardwareInfo | null): void {
+    this.systemHardwareInfo = info;
+    this.emitTelemetryNow();
+  }
+
+  getHardwareDiagnostics(): ResolvedHardwareDiagnostics {
+    // Combine exact GLB asset pipeline VRAM accounting with a conservative baseline
+    // for Three.js scene geometries/textures + active CSM shadow maps.
+    const infoMem = this.renderer.info.memory;
+    const shadowCfg = this.shadowSystem.getConfig();
+    let shadowBytes = 0;
+    if (this.shadowSystem.isShadowsEnabled()) {
+      for (const c of shadowCfg.cascades) {
+        shadowBytes += c.mapSize * c.mapSize * 4;
+      }
+    }
+    const approxSceneBytes =
+      infoMem.textures * 2 * 1024 * 1024 +
+      infoMem.geometries * 48 * 1024 +
+      shadowBytes +
+      this.assetPipeline.getEstimatedVramBytes();
+
+    return resolveHardwareDiagnostics(
+      this.rendererName,
+      this.systemHardwareInfo,
+      approxSceneBytes,
+      this.assetPipeline.getLoadedAssetCount(),
+      this.shadowSystem.getActiveCascadeCount()
+    );
+  }
+
   private emitTelemetryNow(): void {
     const camState = this.cameraDirector.getState();
     this.onTelemetry?.({
       fps: this.currentFps,
       rendererName: this.rendererName,
+      hardware: this.getHardwareDiagnostics(),
       drawCalls: this.renderer.info.render.calls,
       triangles: this.renderer.info.render.triangles,
       canvasNonBlackPct: this.canvasNonBlackPct,
@@ -1721,6 +1751,7 @@ export class SceneManager {
 
     this.syncVisualsFromTelemetry(tel);
     this.syncFloatingOriginTransforms(tel, camAltM);
+    this.shadowSystem.update(tel.position, origin, camAltM, R);
     this.atmosphereDome.update(0, this.camera.position, camAltM, atmoTopM);
     this.planetGlobe.update(0, camAltM, this.camera);
     this.earthTileOverlay.update(camAltM);
@@ -2040,17 +2071,7 @@ export class SceneManager {
       this.scene.fog.density = baseFog * fogT * fogT;
     }
 
-    this.sunLight.castShadow = camAltM < 4500;
-    this.sunLight.target.position.set(
-      tel.position.x - origin.x,
-      tel.position.y - origin.y,
-      tel.position.z - origin.z
-    );
-    this.sunLight.target.updateMatrixWorld();
-    this.sunLight.position
-      .copy(this.sunDirVec)
-      .multiplyScalar(camAltM < 4500 ? 320 : R * 2)
-      .add(this.sunLight.target.position);
+    this.shadowSystem.update(tel.position, origin, camAltM, R);
 
     // Apply transient camera shake around CameraDirector position, then restore cleanly
     this.explosionSystem.getCameraShakeOffset(this.shakeOffset);
@@ -2129,6 +2150,8 @@ export class SceneManager {
     window.removeEventListener("resize", this.handleResize);
 
     this.cameraDirector.dispose();
+    this.shadowSystem.dispose();
+    this.assetPipeline.disposeAll();
     this.atmosphereDome.dispose();
     this.planetGlobe.dispose();
     this.earthTileOverlay.dispose();

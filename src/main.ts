@@ -157,6 +157,17 @@ function bootstrap(): void {
       crashed: t.flight.phase === "CRASHED",
       fps: t.fps,
       rendererName: t.rendererName,
+      cpuModel: t.hardware.cpuModel,
+      cpuCores: t.hardware.cpuCores,
+      totalRamGb: t.hardware.totalRamGb,
+      gpuShortName: t.hardware.gpuShortName,
+      gpuTier: t.hardware.gpuTier,
+      gpuTag: t.hardware.gpuTag,
+      isHybridOnIgpu: t.hardware.isHybridOnIgpu,
+      detectedDiscreteGpuName: t.hardware.detectedDiscreteGpuName,
+      estimatedVramMB: t.hardware.estimatedVramMB,
+      glbLoadedCount: t.hardware.glbLoadedCount,
+      shadowCascades: t.hardware.shadowCascades,
       isElectron,
       drawCalls: t.drawCalls,
       triangles: t.triangles,
@@ -280,11 +291,24 @@ function bootstrap(): void {
     }
   );
 
+  // Fetch host CPU / RAM / PCI GPU adapters from Electron main process when running in desktop shell
+  if (window.aetherDesktop?.getSystemHardware) {
+    void window.aetherDesktop
+      .getSystemHardware()
+      .then((hwInfo) => {
+        sceneManager.setSystemHardwareInfo(hwInfo);
+      })
+      .catch(() => {
+        // Browser or restricted preload — WebGL hardware parser still works cleanly
+      });
+  }
+
   const buildSnapshot = (): SceneTelemetry => {
     const orb = sceneManager.getOrbitalStateSnapshot();
     return {
       fps: latestTelemetry?.fps ?? 0,
       rendererName: sceneManager.getRendererName(),
+      hardware: sceneManager.getHardwareDiagnostics(),
       drawCalls: latestTelemetry?.drawCalls ?? 0,
       triangles: latestTelemetry?.triangles ?? 0,
       canvasNonBlackPct: latestTelemetry?.canvasNonBlackPct ?? 0,
@@ -866,6 +890,7 @@ function bootstrap(): void {
             const rect = canvas.getBoundingClientRect();
             const perfMem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
             const sim = window.__STARSHIP_SIM__;
+            const hw = sceneManager.getHardwareDiagnostics();
             resolve({
               frames: frameDeltas.length,
               durationMs: Math.round(now - start),
@@ -875,6 +900,14 @@ function bootstrap(): void {
               drawCalls: sim?.drawCalls ?? 0,
               triangles: sim?.triangles ?? 0,
               rendererName: sceneManager.getRendererName(),
+              cpuModel: hw.cpuModel,
+              cpuCores: hw.cpuCores,
+              gpuShortName: hw.gpuShortName,
+              gpuTier: hw.gpuTier,
+              isHybridOnIgpu: hw.isHybridOnIgpu,
+              estimatedVramMB: hw.estimatedVramMB,
+              glbLoadedCount: hw.glbLoadedCount,
+              shadowCascades: hw.shadowCascades,
               jsHeapUsedMB: perfMem
                 ? Number((perfMem.usedJSHeapSize / (1024 * 1024)).toFixed(1))
                 : null,

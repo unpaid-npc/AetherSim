@@ -62,6 +62,13 @@ export class TopBar {
   private readonly focusToggleBtn: HTMLButtonElement;
   private readonly motionToggleBtn: HTMLButtonElement;
 
+  private readonly hwCpuValEl: HTMLSpanElement;
+  private readonly hwRamValEl: HTMLSpanElement;
+  private readonly hwGpuValEl: HTMLSpanElement;
+  private readonly hwGpuBadgeEl: HTMLSpanElement;
+  private readonly hwVramValEl: HTMLSpanElement;
+  private readonly hwWarnEl: HTMLDivElement;
+
   private readonly cb: TopBarCallbacks;
   private settingsOpen = false;
 
@@ -242,6 +249,41 @@ export class TopBar {
       callbacks.onToggleReducedMotion
     );
 
+    // System Hardware Diagnostics section inside Settings popover
+    const hwSection = el("div", "hw-panel");
+    const hwHeader = el("div", "hw-header");
+    hwHeader.append(el("span", "hw-title", "SYSTEM HARDWARE"));
+    const hwGrid = el("div", "hw-grid");
+
+    const makeHwRow = (label: string, initial: string): HTMLSpanElement => {
+      const row = el("div", "hw-row");
+      const val = el("span", "hw-val tabular", initial);
+      row.append(el("span", "hw-key", label), val);
+      hwGrid.append(row);
+      return val;
+    };
+
+    this.hwCpuValEl = makeHwRow("CPU", "Detecting...");
+    this.hwRamValEl = makeHwRow("RAM", "--");
+
+    const gpuRow = el("div", "hw-row");
+    const gpuRight = el("span", "hw-gpu-wrap tabular");
+    this.hwGpuValEl = el("span", "hw-val hw-gpu-name", "Detecting...");
+    this.hwGpuBadgeEl = el("span", "gpu-tier-badge tier-unknown", "[GPU]");
+    gpuRight.append(this.hwGpuValEl, this.hwGpuBadgeEl);
+    gpuRow.append(el("span", "hw-key", "Active GPU"), gpuRight);
+    hwGrid.append(gpuRow);
+
+    this.hwVramValEl = makeHwRow("VRAM / Assets", "0.0 MB · 0 GLB");
+
+    this.hwWarnEl = el("div", "hw-warning");
+    this.hwWarnEl.style.display = "none";
+    this.hwWarnEl.textContent =
+      "Discrete GPU detected but app is using integrated graphics. Set Windows Graphics Preference to High Performance for electron.exe.";
+
+    hwSection.append(hwHeader, hwGrid, this.hwWarnEl);
+    this.settingsPopover.append(hwSection);
+
     settingsWrap.append(this.settingsBtn, this.settingsPopover);
 
     this.helpBtn = el("button", "ui-btn icon-only", undefined, "Quick-Reference Guide & Controls");
@@ -363,5 +405,22 @@ export class TopBar {
     this.motionToggleBtn.textContent = rm ? "ON" : "OFF";
     this.motionToggleBtn.classList.toggle("active", rm);
     this.motionToggleBtn.setAttribute("aria-pressed", String(rm));
+
+    const hw = t.hardware;
+    this.hwCpuValEl.textContent =
+      hw.cpuCores > 0 ? `${hw.cpuModel} (${hw.cpuCores}T)` : hw.cpuModel;
+    this.hwRamValEl.textContent = hw.totalRamGb > 0 ? `${hw.totalRamGb.toFixed(1)} GB` : "Browser Managed";
+    this.hwGpuValEl.textContent = hw.gpuShortName;
+    this.hwGpuValEl.title = hw.rawRenderer;
+    this.hwGpuBadgeEl.textContent = `[${hw.gpuTag}]`;
+    this.hwGpuBadgeEl.className = `gpu-tier-badge tier-${hw.gpuTier}`;
+    this.hwVramValEl.textContent = `${hw.estimatedVramMB.toFixed(1)} MB · ${hw.glbLoadedCount} GLB · ${hw.shadowCascades}× CSM`;
+    if (hw.isHybridOnIgpu) {
+      this.hwWarnEl.style.display = "block";
+      const dgpuLabel = hw.detectedDiscreteGpuName ? ` (${hw.detectedDiscreteGpuName})` : "";
+      this.hwWarnEl.textContent = `Discrete GPU detected${dgpuLabel} but app is using integrated graphics. Set Windows Graphics Preference to High Performance for electron.exe.`;
+    } else {
+      this.hwWarnEl.style.display = "none";
+    }
   }
 }

@@ -11,7 +11,11 @@ import {
   samplePlanetTerrainHeight,
   smoothstep,
 } from "../utils/noise";
+import { AssetPipeline } from "./AssetPipeline";
 import { loadPbrTextureSet } from "./PbrTextureLoader";
+
+const STARBASE_MEGABAY_GLB_URL = "./models/starbase_megabay.glb";
+const TRACKING_RADOME_GLB_URL = "./models/tracking_radome.glb";
 
 interface VehicleSpec {
   laneZ: number;
@@ -123,18 +127,25 @@ export class CoastalEnvironment {
 
   private isEarthActive = true;
   private quality: QualityPreset;
+  private readonly assetPipeline: AssetPipeline | null;
+  private readonly onHeroAssetLoaded?: () => void;
+  private heroLoadSeq = 0;
   private readonly dummy = new THREE.Object3D();
 
   constructor(
     initialConfig: PlanetConfig,
     quality: QualityPreset,
     maxAnisotropy = 4,
-    initialSite: LaunchSiteConfig = getDefaultLaunchSiteForPlanet("earth")
+    initialSite: LaunchSiteConfig = getDefaultLaunchSiteForPlanet("earth"),
+    assetPipeline: AssetPipeline | null = null,
+    onHeroAssetLoaded?: () => void
   ) {
     this.earthConfig = getPlanetConfig("earth");
     this.currentSite = initialSite;
     this.quality = quality;
     this.maxAnisotropy = maxAnisotropy;
+    this.assetPipeline = assetPipeline;
+    this.onHeroAssetLoaded = onHeroAssetLoaded;
     this.noise = new SeededNoise2D(this.earthConfig.terrain.seed);
     this.buildEarthWorld(this.earthConfig, initialSite);
     this.setPlanet(initialConfig, initialSite);
@@ -151,6 +162,7 @@ export class CoastalEnvironment {
   }
 
   private clearSiteGeometry(): void {
+    this.heroLoadSeq += 1;
     this.group.clear();
     this.oceanMesh = null;
     this.oceanMat = null;
@@ -408,17 +420,24 @@ export class CoastalEnvironment {
     const unitBox = this.track(new THREE.BoxGeometry(1, 1, 1));
     let strobeTargets: Array<{ x: number; y: number; z: number }> = [];
 
+    const heroSeq = this.heroLoadSeq;
     if (site.id === "ksc_lc39a") {
       // Monumental NASA Vehicle Assembly Building (160 m tall x 157 m wide x 218 m long) + LCC
       const vabY = this.sampleGroundY(-1040, -35);
       const vabMain = new THREE.Mesh(this.track(new THREE.BoxGeometry(158, 160, 212)), bayRibMat);
       vabMain.position.set(-1040, vabY + 80, -35);
+      vabMain.castShadow = true;
+      vabMain.receiveShadow = true;
       const vabLowBay = new THREE.Mesh(this.track(new THREE.BoxGeometry(92, 64, 134)), factoryWallMat);
       vabLowBay.position.set(-925, vabY + 32, -35);
+      vabLowBay.castShadow = true;
+      vabLowBay.receiveShadow = true;
       const vabDoor = new THREE.Mesh(this.track(new THREE.BoxGeometry(8, 138, 48)), steelDarkMat);
       vabDoor.position.set(-960, vabY + 69, -35);
       const lccWing = new THREE.Mesh(this.track(new THREE.BoxGeometry(86, 22, 118)), glassMat);
       lccWing.position.set(-885, vabY + 11, 78);
+      lccWing.castShadow = true;
+      lccWing.receiveShadow = true;
       this.group.add(vabMain, vabLowBay, vabDoor, lccWing);
       strobeTargets = [
         { x: -965, y: vabY + 163, z: -135 },
@@ -429,10 +448,15 @@ export class CoastalEnvironment {
       const mikY = this.sampleGroundY(-820, -45);
       const mikMain = new THREE.Mesh(this.track(new THREE.BoxGeometry(240, 28, 76)), factoryWallMat);
       mikMain.position.set(-820, mikY + 14, -45);
+      mikMain.castShadow = true;
+      mikMain.receiveShadow = true;
       const mikRoof = new THREE.Mesh(this.track(new THREE.BoxGeometry(246, 4, 80)), steelDarkMat);
       mikRoof.position.set(-820, mikY + 30, -45);
+      mikRoof.castShadow = true;
       const mikSide = new THREE.Mesh(this.track(new THREE.BoxGeometry(120, 20, 48)), bayRibMat);
       mikSide.position.set(-760, mikY + 10, 28);
+      mikSide.castShadow = true;
+      mikSide.receiveShadow = true;
       this.group.add(mikMain, mikRoof, mikSide);
       strobeTargets = [{ x: -700, y: mikY + 33, z: -82 }];
     } else if (site.id === "sriharikota" || site.id === "kourou" || site.id === "tanegashima") {
@@ -441,28 +465,61 @@ export class CoastalEnvironment {
       const gy = this.sampleGroundY(vabX, -48);
       const tallVab = new THREE.Mesh(this.track(new THREE.BoxGeometry(58, vabH, 68)), factoryWallMat);
       tallVab.position.set(vabX, gy + vabH * 0.5, -48);
+      tallVab.castShadow = true;
+      tallVab.receiveShadow = true;
       const trim = new THREE.Mesh(this.track(new THREE.BoxGeometry(60, 9, 70)), bayRibMat);
       trim.position.set(vabX, gy + vabH - 6, -48);
+      trim.castShadow = true;
       const annex = new THREE.Mesh(this.track(new THREE.BoxGeometry(140, 24, 62)), bayRibMat);
       annex.position.set(vabX - 140, gy + 12, -55);
+      annex.castShadow = true;
+      annex.receiveShadow = true;
       this.group.add(tallVab, trim, annex);
       strobeTargets = [{ x: vabX + 26, y: gy + vabH + 3, z: -18 }];
     } else {
-      // Starbase Mega Bay 1 & 2 + Starfactory
-      const bayBodyInst = new THREE.InstancedMesh(unitBox, bayRibMat, 14);
+      // Starbase Mega Bay 1 & 2 (upgraded asynchronously to public/models/starbase_megabay.glb) + Starfactory
       const baySpecs = [
         { bx: -560, bz: -48, h: 86, w: 44 },
         { bx: -672, bz: -48, h: 82, w: 42 },
       ];
+      const megaBayFallbackGroup = new THREE.Group();
+      megaBayFallbackGroup.name = "StarbaseMegaBaysFallback";
+
+      const fallbackBayInst = new THREE.InstancedMesh(unitBox, bayRibMat, 2);
+      const fallbackGlassInst = new THREE.InstancedMesh(unitBox, glassMat, 2);
+      const fallbackRoofInst = new THREE.InstancedMesh(unitBox, steelDarkMat, 2);
+      fallbackBayInst.castShadow = true;
+      fallbackBayInst.receiveShadow = true;
+      fallbackRoofInst.castShadow = true;
+
       baySpecs.forEach((b, i) => {
         const gy = this.sampleGroundY(b.bx, b.bz);
         this.dummy.position.set(b.bx, gy + b.h * 0.5, b.bz);
         this.dummy.rotation.set(0, 0, 0);
         this.dummy.scale.set(b.w, b.h, b.w * 0.9);
         this.dummy.updateMatrix();
-        bayBodyInst.setMatrixAt(i, this.dummy.matrix);
+        fallbackBayInst.setMatrixAt(i, this.dummy.matrix);
+
+        this.dummy.position.set(b.bx, gy + b.h * 0.84, b.bz);
+        this.dummy.scale.set(b.w + 0.9, 9.5, b.w * 0.9 + 0.9);
+        this.dummy.updateMatrix();
+        fallbackGlassInst.setMatrixAt(i, this.dummy.matrix);
+
+        this.dummy.position.set(b.bx, gy + b.h + 2.1, b.bz);
+        this.dummy.scale.set(b.w + 3.0, 4.2, b.w * 0.9 + 2.4);
+        this.dummy.updateMatrix();
+        fallbackRoofInst.setMatrixAt(i, this.dummy.matrix);
+        strobeTargets.push({ x: b.bx + b.w * 0.42, y: gy + b.h + 5.2, z: b.bz + b.w * 0.36 });
       });
+      fallbackBayInst.instanceMatrix.needsUpdate = true;
+      fallbackGlassInst.instanceMatrix.needsUpdate = true;
+      fallbackRoofInst.instanceMatrix.needsUpdate = true;
+      megaBayFallbackGroup.add(fallbackBayInst, fallbackGlassInst, fallbackRoofInst);
+
+      // Starfactory complex & rooftop HVAC vents
       const factoryGround = this.sampleGroundY(-980, -62);
+      const factoryVentInst = new THREE.InstancedMesh(unitBox, bayRibMat, 12);
+      factoryVentInst.castShadow = true;
       for (let i = 0; i < 12; i++) {
         const col = i % 6;
         const row = Math.floor(i / 6);
@@ -470,62 +527,82 @@ export class CoastalEnvironment {
         this.dummy.rotation.set(0, 0, 0);
         this.dummy.scale.set(8.5, 3.2, 6.5);
         this.dummy.updateMatrix();
-        bayBodyInst.setMatrixAt(2 + i, this.dummy.matrix);
+        factoryVentInst.setMatrixAt(i, this.dummy.matrix);
       }
-      bayBodyInst.instanceMatrix.needsUpdate = true;
+      factoryVentInst.instanceMatrix.needsUpdate = true;
 
-      const glassBandInst = new THREE.InstancedMesh(unitBox, glassMat, 3);
-      const roofTrimInst = new THREE.InstancedMesh(unitBox, steelDarkMat, 3);
-      baySpecs.forEach((b, i) => {
-        const gy = this.sampleGroundY(b.bx, b.bz);
-        this.dummy.position.set(b.bx, gy + b.h * 0.84, b.bz);
-        this.dummy.scale.set(b.w + 0.9, 9.5, b.w * 0.9 + 0.9);
-        this.dummy.updateMatrix();
-        glassBandInst.setMatrixAt(i, this.dummy.matrix);
-
-        this.dummy.position.set(b.bx, gy + b.h + 2.1, b.bz);
-        this.dummy.scale.set(b.w + 3.0, 4.2, b.w * 0.9 + 2.4);
-        this.dummy.updateMatrix();
-        roofTrimInst.setMatrixAt(i, this.dummy.matrix);
-        strobeTargets.push({ x: b.bx + b.w * 0.42, y: gy + b.h + 5.2, z: b.bz + b.w * 0.36 });
-      });
-      this.dummy.position.set(-980, factoryGround + 18.5, -62);
-      this.dummy.scale.set(262, 5.2, 99.2);
-      this.dummy.updateMatrix();
-      glassBandInst.setMatrixAt(2, this.dummy.matrix);
-      this.dummy.position.set(-980, factoryGround + 26.5, -62);
-      this.dummy.scale.set(274, 3.0, 102);
-      this.dummy.updateMatrix();
-      roofTrimInst.setMatrixAt(2, this.dummy.matrix);
-      glassBandInst.instanceMatrix.needsUpdate = true;
-      roofTrimInst.instanceMatrix.needsUpdate = true;
-
+      const factoryGlass = new THREE.Mesh(this.track(new THREE.BoxGeometry(262, 5.2, 99.2)), glassMat);
+      factoryGlass.position.set(-980, factoryGround + 18.5, -62);
+      const factoryRoof = new THREE.Mesh(this.track(new THREE.BoxGeometry(274, 3.0, 102)), steelDarkMat);
+      factoryRoof.position.set(-980, factoryGround + 26.5, -62);
+      factoryRoof.castShadow = true;
       const factoryMain = new THREE.Mesh(this.track(new THREE.BoxGeometry(270, 26, 98)), factoryWallMat);
       factoryMain.position.set(-980, factoryGround + 13, -62);
-      this.group.add(bayBodyInst, glassBandInst, roofTrimInst, factoryMain);
+      factoryMain.castShadow = true;
+      factoryMain.receiveShadow = true;
+
+      this.group.add(megaBayFallbackGroup, factoryVentInst, factoryGlass, factoryRoof, factoryMain);
+
+      if (this.assetPipeline) {
+        void Promise.all(
+          baySpecs.map(() =>
+            this.assetPipeline!.loadModelInstance(STARBASE_MEGABAY_GLB_URL, {
+              maxAnisotropy: this.maxAnisotropy,
+              castShadow: true,
+              receiveShadow: true,
+            })
+          )
+        ).then((instances) => {
+          if (heroSeq !== this.heroLoadSeq || !instances.every((m) => m !== null)) {
+            return;
+          }
+          const glbBayGroup = new THREE.Group();
+          glbBayGroup.name = "StarbaseMegaBaysGLB";
+          baySpecs.forEach((b, i) => {
+            const inst = instances[i]!;
+            const gy = this.sampleGroundY(b.bx, b.bz);
+            inst.position.set(b.bx, gy, b.bz);
+            inst.scale.set(b.w / 44, b.h / 86, (b.w * 0.9) / 40);
+            glbBayGroup.add(inst);
+          });
+          megaBayFallbackGroup.visible = false;
+          this.group.remove(megaBayFallbackGroup);
+          this.group.add(glbBayGroup);
+          this.onHeroAssetLoaded?.();
+        });
+      }
     }
 
-    // Range Telemetry Station (present across all 6 global spaceports)
+    // Range Telemetry Station (present across all 6 global spaceports; Starbase upgrades Radome to GLB hero asset)
     const rangeY = this.sampleGroundY(-365, 148);
     const rangeGroup = new THREE.Group();
     rangeGroup.position.set(-365, rangeY, 148);
 
+    const radomeFallbackGroup = new THREE.Group();
+    radomeFallbackGroup.name = "RadomeFallback";
     const radomeBase = new THREE.Mesh(
       this.track(new THREE.CylinderGeometry(8.5, 9.8, 7.5, 16)),
       concreteMat
     );
     radomeBase.position.set(-12, 3.75, 0);
+    radomeBase.castShadow = true;
+    radomeBase.receiveShadow = true;
     const radomeSphere = new THREE.Mesh(
       this.track(new THREE.IcosahedronGeometry(9.6, 2)),
       domeWhiteMat
     );
     radomeSphere.position.set(-12, 13.5, 0);
+    radomeSphere.castShadow = true;
+    radomeSphere.receiveShadow = true;
+    radomeFallbackGroup.add(radomeBase, radomeSphere);
 
     const radarPedestal = new THREE.Mesh(
       this.track(new THREE.CylinderGeometry(2.0, 2.8, 12.0, 10)),
       steelDarkMat
     );
     radarPedestal.position.set(14, 6.0, -4);
+    radarPedestal.castShadow = true;
+    radarPedestal.receiveShadow = true;
     this.radarPivot = new THREE.Group();
     this.radarPivot.position.set(14, 12.6, -4);
     const dish = new THREE.Mesh(
@@ -533,6 +610,7 @@ export class CoastalEnvironment {
       domeWhiteMat
     );
     dish.rotation.x = Math.PI * 0.34;
+    dish.castShadow = true;
     const feedHorn = new THREE.Mesh(
       this.track(new THREE.CylinderGeometry(0.18, 0.32, 4.8, 8)),
       steelDarkMat
@@ -546,6 +624,7 @@ export class CoastalEnvironment {
       domeWhiteMat
     );
     weatherMast.position.set(22, 22, 12);
+    weatherMast.castShadow = true;
     strobeTargets.push({ x: -343, y: rangeY + 44.5, z: 160 });
 
     const strobeInst = new THREE.InstancedMesh(
@@ -562,8 +641,27 @@ export class CoastalEnvironment {
     });
     strobeInst.instanceMatrix.needsUpdate = true;
 
-    rangeGroup.add(radomeBase, radomeSphere, radarPedestal, this.radarPivot, weatherMast);
+    rangeGroup.add(radomeFallbackGroup, radarPedestal, this.radarPivot, weatherMast);
     this.group.add(rangeGroup, strobeInst);
+
+    if (site.id === "starbase" && this.assetPipeline) {
+      void this.assetPipeline
+        .loadModelInstance(TRACKING_RADOME_GLB_URL, {
+          maxAnisotropy: this.maxAnisotropy,
+          castShadow: true,
+          receiveShadow: true,
+        })
+        .then((radomeGlb) => {
+          if (heroSeq !== this.heroLoadSeq || !radomeGlb) {
+            return;
+          }
+          radomeGlb.position.set(-12, 0, 0);
+          radomeFallbackGroup.visible = false;
+          rangeGroup.remove(radomeFallbackGroup);
+          rangeGroup.add(radomeGlb);
+          this.onHeroAssetLoaded?.();
+        });
+    }
 
     this.buildInstancedVegetation(site);
     this.buildSupportVehicles(domeWhiteMat, steelDarkMat, roadZ);

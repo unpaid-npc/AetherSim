@@ -1,4 +1,4 @@
-const { contextBridge } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopApp", {
   isElectron: true,
@@ -9,3 +9,9 @@ contextBridge.exposeInMainWorld("desktopApp", {
     node: process.versions.node,
   },
 });
+
+contextBridge.exposeInMainWorld("aetherDesktop", {
+  isElectron: true,
+  getSystemHardware: () => ipcRenderer.invoke("system:get-hardware-info"),
+});
+

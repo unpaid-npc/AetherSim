@@ -1,6 +1,7 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
-const { app, BrowserWindow, Menu, session } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, session } = require("electron");
 
 const isSmokeTest = process.env.ELECTRON_SMOKE_TEST === "1";
 const isProfile = process.env.ELECTRON_PROFILE === "1";
@@ -8,12 +9,67 @@ const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 
 app.commandLine.appendSwitch("enable-webgl");
 app.commandLine.appendSwitch("ignore-gpu-blocklist");
+app.commandLine.appendSwitch("force_high_performance_gpu");
 if (devServerUrl) {
   app.commandLine.appendSwitch("proxy-bypass-list", "127.0.0.1;localhost");
 }
 if (isProfile) {
   app.commandLine.appendSwitch("disable-background-timer-throttling");
   app.commandLine.appendSwitch("disable-renderer-backgrounding");
+}
+
+const PCI_VENDORS = {
+  0x10de: "NVIDIA",
+  0x1002: "AMD",
+  0x8086: "Intel",
+  0x1414: "Microsoft",
+};
+
+function classifyPciGpuTier(vendorId, deviceString) {
+  const s = String(deviceString || "").trim();
+  if (/swiftshader|llvmpipe|softpipe|basic render|warp/i.test(s) || vendorId === 0x1414) {
+    return "software";
+  }
+  if (vendorId === 0x10de || /\bnvidia|geforce|quadro|rtx|gtx\b/i.test(s)) {
+    return "dgpu";
+  }
+  if (vendorId === 0x1002 || /\bamd|radeon\b/i.test(s)) {
+    return /\b(RX\s*\d|R9\b|R7\b|Pro\s*W|FirePro|Vega\s*(56|64|Frontier)|Fury|Instinct|XT\b|XTX\b)\b/i.test(s)
+      ? "dgpu"
+      : "igpu";
+  }
+  if (vendorId === 0x8086 || /\bintel\b/i.test(s)) {
+    return /\bArc\s*[AB]\d{3}/i.test(s) ? "dgpu" : "igpu";
+  }
+  return "unknown";
+}
+
+async function collectSystemHardwareInfo() {
+  const cpus = os.cpus() || [];
+  const cpuModel = cpus.length > 0 ? String(cpus[0].model || "").trim() : "Unknown CPU";
+  const cpuCores = cpus.length;
+  const totalRamGb = Number((os.totalmem() / (1024 * 1024 * 1024)).toFixed(1));
+  let gpuDevices = [];
+  try {
+    const gpuInfo = await app.getGPUInfo("basic");
+    const rawDevices = Array.isArray(gpuInfo && gpuInfo.gpuDevice) ? gpuInfo.gpuDevice : [];
+    gpuDevices = rawDevices.map((d) => {
+      const vendorId = Number(d && d.vendorId) || 0;
+      const deviceId = Number(d && d.deviceId) || 0;
+      const deviceString = String((d && (d.deviceString || d.description)) || "").trim();
+      return {
+        vendorId,
+        deviceId,
+        vendorName: PCI_VENDORS[vendorId] || "Unknown",
+        deviceString,
+        active: Boolean(d && d.active),
+        tier: classifyPciGpuTier(vendorId, deviceString),
+      };
+    });
+  } catch {
+    gpuDevices = [];
+  }
+  return { cpuModel, cpuCores, totalRamGb, gpuDevices };
 }
 
 const mainErrors = [];
@@ -42,7 +98,7 @@ function installDevCspHeaders() {
   const wsOrigin = devOrigin.replace(/^http/, "ws");
   const devCsp =
     `default-src 'self' ${devOrigin} ${wsOrigin}; ` +
-    `script-src 'self' 'unsafe-inline' blob: ${devOrigin}; ` +
+    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: ${devOrigin}; ` +
     `worker-src 'self' blob: ${devOrigin}; ` +
     `style-src 'self' 'unsafe-inline' ${devOrigin}; ` +
     "img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; " +
@@ -425,6 +481,7 @@ function createWindow() {
               return samples;
             })()
           `);
+          const systemHardware = await collectSystemHardwareInfo();
           const allErrors = [...mainErrors, ...rendererErrors];
           const ok = allErrors.length === 0 && Array.isArray(results) && results.length === 9;
           console.log("PROFILE_JSON_START");
@@ -432,6 +489,7 @@ function createWindow() {
             JSON.stringify(
               {
                 profileStatus: ok ? "PROFILE_OK" : "PROFILE_FAIL",
+                systemHardware,
                 samples: results,
                 warnings: rendererWarnings,
                 errors: allErrors,
@@ -542,6 +600,7 @@ function installApplicationMenu() {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle("system:get-hardware-info", async () => collectSystemHardwareInfo());
   installApplicationMenu();
   installDevCspHeaders();
   createWindow();
