@@ -351,7 +351,7 @@ export class RLEnvironment {
       planetId: config.planetId,
       missionMode: config.missionMode,
       randomizeSpawn: config.randomizeSpawn,
-      maxSteps: config.maxSteps ?? (config.missionMode === "landing" ? 700 : 500),
+      maxSteps: config.maxSteps ?? 700,
       padDeckY,
       faultConfig: config.faultConfig
         ? sanitizeFaultConfig(config.faultConfig)
@@ -378,7 +378,7 @@ export class RLEnvironment {
     this.config.missionMode = missionMode;
     this.config.randomizeSpawn = randomizeSpawn;
     this.config.padDeckY = getPadDeckYForPlanet(planetId);
-    this.config.maxSteps = missionMode === "landing" ? 700 : 500;
+    this.config.maxSteps = 700;
     if (faultConfig) {
       this.config.faultConfig = sanitizeFaultConfig(faultConfig);
     }

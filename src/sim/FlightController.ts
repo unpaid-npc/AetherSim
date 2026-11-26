@@ -359,7 +359,6 @@ export class FlightController {
   private dynamicPressurePa = 0;
   private maxQPa = 0;
   private maxQReached = false;
-  private prevDynamicPressurePa = 0;
   private mach = 0;
 
   private booster: BoosterState = {
@@ -501,7 +500,6 @@ export class FlightController {
     this.gridFinYaw = 0;
 
     this.dynamicPressurePa = 0;
-    this.prevDynamicPressurePa = 0;
     this.maxQPa = 0;
     this.maxQReached = false;
     this.mach = 0;
@@ -995,16 +993,19 @@ export class FlightController {
       rho = this.sampleAirDensity(Math.max(0, this.pos.y - this.padDeckY));
     }
 
-    this.prevDynamicPressurePa = this.dynamicPressurePa;
     this.dynamicPressurePa = 0.5 * rho * speed * speed;
     if (this.dynamicPressurePa > this.maxQPa) {
       this.maxQPa = this.dynamicPressurePa;
     }
+    const minPeakQPa = this.planet.id === "earth" ? 8_000 : 120;
+    const maxQAltCeilingM = this.planet.id === "earth" ? 35_000 : 45_000;
     if (
       !this.maxQReached &&
-      this.maxQPa > 120 &&
-      this.dynamicPressurePa < this.prevDynamicPressurePa * 0.985 &&
-      altM > 200
+      this.missionMode === "launch" &&
+      this.maxQPa > minPeakQPa &&
+      altM > 200 &&
+      altM < maxQAltCeilingM &&
+      this.dynamicPressurePa < this.maxQPa * 0.94
     ) {
       this.maxQReached = true;
     }
@@ -1676,12 +1677,31 @@ export class FlightController {
     const g = this.planet.physics.gravityMps2;
 
     if (this.missionMode === "launch") {
-      const maxAccelAvailable = this.stageSeparated ? 24.0 : 22.0;
+      // Align teacher throttle with true 1:1 vehicle TWR so Earth/Mars/Moon climb cleanly off the pad
+      const prof = getVehicleLaunchProfile(this.vehicle.id, this.planet.id);
+      const inSidePhase = this.vehicle.hasSideBoosters && !this.sideBoostersSeparated;
+      const activeMassKg = this.stageSeparated
+        ? prof.shipDryKg + this.shipFuel * prof.shipPropKg
+        : inSidePhase
+          ? prof.sideBoosterDryKg +
+            this.sideBoosterFuel * prof.sideBoosterPropKg +
+            prof.stackDryAndPayloadKg +
+            prof.boosterPropKg
+          : prof.stackDryAndPayloadKg + this.boosterFuel * prof.boosterPropKg;
+      const nominalThrustN = this.stageSeparated
+        ? prof.shipThrustN
+        : inSidePhase
+          ? prof.sideBoosterThrustN
+          : prof.boosterThrustN;
+      const maxAccelAvailable = Math.min(
+        prof.maxGLoadMps2,
+        nominalThrustN / Math.max(1000, activeMassKg)
+      );
       const desiredNetClimb = this.stageSeparated ? 12.5 : 8.5;
-      const throttle = clamp((g + desiredNetClimb) / maxAccelAvailable, 0.28, 1.0);
-      const targetPitch = altM < 90 ? 0 : clamp((altM - 90) / 3600, 0, 0.72);
-      const pitchCmd = clamp((targetPitch - this.pitch) * 3.0 - this.pitchVel * 0.8, -1, 1);
-      const yawCmd = clamp((0 - this.roll) * 3.0 - this.rollVel * 0.8, -1, 1);
+      const throttle = clamp((g + desiredNetClimb) / Math.max(1, maxAccelAvailable), 0.35, 1.0);
+      const targetPitch = altM < 180 ? 0 : clamp((altM - 180) / 4200, 0, 0.38);
+      const pitchCmd = clamp((targetPitch - this.pitch) * 3.0 - this.pitchVel * 0.85, -1, 1);
+      const yawCmd = clamp((0 - this.roll) * 3.0 - this.rollVel * 0.85, -1, 1);
       return { throttle, pitchCmd, yawCmd, autoLegs: false };
     }
 

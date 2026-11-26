@@ -165,13 +165,13 @@ export function generatePlanetTextureSet(
         heightVal = macro * 0.5 + detail * 0.5;
         roughVal = Math.max(0.66, Math.min(0.92, 0.84 - ripplePatch * 0.08 + (detail - 0.5) * 0.08));
       } else {
-        // Moon: silicate regolith with sharp micro-craters and bright ejecta
+        // Moon: powdery silicate regolith with balanced micro-craters (no dark normal-map vortex)
         const microCrater = microNoise.craterField(u * 256, v * 256, 48);
-        const mareMask = smoothstep(0.5, 0.76, macro);
-        rgb = mixRgb(cPrimary, cSecondary, smoothstep(0.45, 0.85, detail + Math.max(0, microCrater)));
-        rgb = mixRgb(rgb, cDark, mareMask * 0.65);
-        heightVal += microCrater * 0.48;
-        roughVal = Math.max(0.78, Math.min(0.99, 0.95 - mareMask * 0.06 + (detail - 0.5) * 0.08));
+        const mareMask = smoothstep(0.52, 0.78, macro);
+        rgb = mixRgb(cPrimary, cSecondary, smoothstep(0.42, 0.86, detail + Math.max(0, microCrater * 0.6)));
+        rgb = mixRgb(rgb, cDark, mareMask * 0.36);
+        heightVal += microCrater * 0.22;
+        roughVal = Math.max(0.84, Math.min(0.99, 0.95 - mareMask * 0.04 + (detail - 0.5) * 0.06));
       }
 
       const i = y * size + x;
@@ -190,7 +190,7 @@ export function generatePlanetTextureSet(
     }
   }
 
-  const normalStrength = config.id === "moon" ? 3.2 : config.id === "mars" ? 2.6 : 2.0;
+  const normalStrength = config.id === "moon" ? 1.35 : config.id === "mars" ? 2.1 : 1.9;
   const normals = buildNormalBuffer(heights, size, normalStrength);
 
   return {

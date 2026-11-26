@@ -321,4 +321,56 @@ describe("CameraDirector — Authoritative State Machine & Guaranteed 3D Vehicle
       expect(camRadial.dot(vehRadial)).toBeGreaterThan(0.7);
     }
   });
+
+  it("maintains zero horizon roll (< 0.01 deg) across 0..315 deg horizontal drag in F5 Free, F6 Map, and orbital inspect", () => {
+    const R = getPlanetConfig("earth").scale.simRadiusM;
+    const cam = new THREE.PerspectiveCamera(52, 16 / 9, 0.5, R * 26);
+    const director = new CameraDirector(cam, null);
+    director.setPlanetRadius(R);
+
+    const ctx = makeContext(makeTelemetry({ position: { x: 0, y: 18.0, z: 0 }, altitudeM: 0 }));
+    director.setMode("free", ctx);
+
+    const radius = Math.hypot(cam.position.x, cam.position.z);
+    const camY = cam.position.y;
+    const azimuthsDeg = [0, 45, 90, 135, 180, 225, 270, 315];
+
+    for (const deg of azimuthsDeg) {
+      const rad = THREE.MathUtils.degToRad(deg);
+      cam.position.set(Math.sin(rad) * radius, camY, Math.cos(rad) * radius);
+      director.update(1 / 60, ctx);
+      cam.updateMatrixWorld(true);
+
+      // Camera local +X (right vector) must stay strictly horizontal (y = 0) -> zero roll!
+      const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion).normalize();
+      const rollDeg = Math.abs(THREE.MathUtils.radToDeg(Math.asin(Math.max(-1, Math.min(1, camRight.y)))));
+      expect(rollDeg).toBeLessThan(0.01);
+    }
+
+    // Verify F6 Map & orbital inspect also keep strictly level horizon across horizontal sweep
+    director.setMode("map", ctx);
+    const mapR = Math.hypot(cam.position.x, cam.position.z);
+    const mapY = cam.position.y;
+    for (const deg of azimuthsDeg) {
+      const rad = THREE.MathUtils.degToRad(deg);
+      cam.position.set(Math.sin(rad) * mapR, mapY, Math.cos(rad) * mapR);
+      director.update(1 / 60, ctx);
+      cam.updateMatrixWorld(true);
+      const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(cam.quaternion).normalize();
+      const rollDeg = Math.abs(THREE.MathUtils.radToDeg(Math.asin(Math.max(-1, Math.min(1, camRight.y)))));
+      expect(rollDeg).toBeLessThan(0.01);
+    }
+
+    // Verify spacecraft inspect distance scales proportionally to object bounding radius (ISS vs Sentinel-2A)
+    const satWorld = new THREE.Vector3(1_200_000, 410_000, -500_000);
+    director.focusOrbitalObject({ ...ctx, inspectedOrbitalPos: satWorld, inspectedOrbitalRadiusM: 56 });
+    const issDist = cam.position.length();
+    expect(issDist).toBeGreaterThan(80);
+    expect(issDist).toBeLessThan(110);
+
+    director.focusOrbitalObject({ ...ctx, inspectedOrbitalPos: satWorld, inspectedOrbitalRadiusM: 12 });
+    const sentinelDist = cam.position.length();
+    expect(sentinelDist).toBeGreaterThan(14);
+    expect(sentinelDist).toBeLessThan(26);
+  });
 });

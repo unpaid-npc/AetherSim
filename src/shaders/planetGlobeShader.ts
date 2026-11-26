@@ -91,8 +91,10 @@ float valueNoise3D(vec3 p) {
 void main() {
   #include <logdepthbuf_fragment>
 
-  // Eliminate any low-altitude Z-fighting shards beneath the opaque local terrain/ocean disc
-  float cutoutFade = 1.0 - smoothstep(8000.0, 14000.0, uCameraAltitude);
+  // Close globe cutout strictly BEFORE local terrain starts fading out (zero hole, zero floating disc)
+  float cutStart = uIsEarth > 0.5 ? 1800.0 : 3500.0;
+  float cutEnd = uIsEarth > 0.5 ? 3600.0 : 7000.0;
+  float cutoutFade = 1.0 - smoothstep(cutStart, cutEnd, uCameraAltitude);
   float activeCutoutR = uLocalTerrainCutoutRadius * cutoutFade;
   vec3 relPad = vWorldPos - uPadRenderPos;
   if (
