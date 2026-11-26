@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { app, BrowserWindow, session } = require("electron");
+const { app, BrowserWindow, Menu, session } = require("electron");
 
 const isSmokeTest = process.env.ELECTRON_SMOKE_TEST === "1";
 const isProfile = process.env.ELECTRON_PROFILE === "1";
@@ -45,10 +45,10 @@ function installDevCspHeaders() {
     `script-src 'self' 'unsafe-inline' blob: ${devOrigin}; ` +
     `worker-src 'self' blob: ${devOrigin}; ` +
     `style-src 'self' 'unsafe-inline' ${devOrigin}; ` +
-    "img-src 'self' data: blob:; " +
+    "img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; " +
     "media-src 'self' blob: data:; " +
     "font-src 'self' data:; " +
-    `connect-src 'self' ${devOrigin} ${wsOrigin} blob: data:;`;
+    `connect-src 'self' ${devOrigin} ${wsOrigin} blob: data: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov https://celestrak.org;`;
 
   session.defaultSession.webRequest.onHeadersReceived(
     { urls: [`${devOrigin}/*`] },
@@ -280,7 +280,113 @@ function createWindow() {
         if (diagnostics.fatalBanner) {
           finalizeSmoke(diagnostics, false);
         } else if (metricsReady) {
-          finalizeSmoke(diagnostics, true);
+          if (smokeTimer) {
+            clearInterval(smokeTimer);
+            smokeTimer = null;
+          }
+
+          // Automated live camera sweep: test physical F1-F8 + Ship/Booster + Re-lock
+          win.webContents.focus();
+          const initialBootId = await win.webContents.executeJavaScript("window.__AETHERSIM_BOOT_ID__ || null");
+          const sweepSteps = [];
+
+          const verifyCam = async (label, expected) => {
+            await new Promise((r) => setTimeout(r, 85));
+            const probeState = await win.webContents.executeJavaScript(`
+              (() => {
+                const probe = window.__AETHERSIM_PROFILER__ ? window.__AETHERSIM_PROFILER__.probeCanvas() : { pct: 0, meanRgb: [0,0,0] };
+                const activeModeBtns = Array.from(document.querySelectorAll('[data-cam-mode].active')).map((b) => b.dataset.camMode);
+                const activeTrackBtns = Array.from(document.querySelectorAll('[data-track-target].active')).map((b) => b.dataset.trackTarget);
+                const autoBtn = document.querySelector('[data-cam-action="auto"]');
+                const autoActive = Boolean(autoBtn && autoBtn.classList.contains('active'));
+                return {
+                  bootId: window.__AETHERSIM_BOOT_ID__ || null,
+                  cameraPreset: window.__STARSHIP_SIM__ ? window.__STARSHIP_SIM__.cameraPreset : null,
+                  trackTarget: window.__STARSHIP_SIM__ ? window.__STARSHIP_SIM__.trackTarget : null,
+                  activeModeBtns,
+                  activeTrackBtns,
+                  autoActive,
+                  nonBlackPct: probe.pct,
+                  meanRgb: probe.meanRgb,
+                };
+              })()
+            `);
+            const modeOk = !expected.mode || (probeState.cameraPreset === expected.mode && probeState.activeModeBtns.length === 1 && probeState.activeModeBtns[0] === expected.mode);
+            const targetOk = !expected.target || (probeState.trackTarget === expected.target && probeState.activeTrackBtns.length === 1 && probeState.activeTrackBtns[0] === expected.target);
+            const autoOk = typeof expected.auto !== "boolean" || probeState.autoActive === expected.auto;
+            const noReload = Boolean(initialBootId && probeState.bootId === initialBootId);
+            const nonBlack = probeState.nonBlackPct > 0;
+            const passed = modeOk && targetOk && autoOk && noReload && nonBlack;
+            sweepSteps.push({
+              label,
+              passed,
+              mode: probeState.cameraPreset,
+              trackTarget: probeState.trackTarget,
+              autoActive: probeState.autoActive,
+              nonBlackPct: probeState.nonBlackPct,
+            });
+            if (!passed) {
+              mainErrors.push(
+                `cameraSweep '${label}' failed: got=${JSON.stringify(probeState)} expected=${JSON.stringify(expected)}`
+              );
+            }
+          };
+
+          const keySweep = [
+            { keyCode: "F1", label: "Key F1 (Pad)", expected: { mode: "pad", auto: false } },
+            { keyCode: "F2", label: "Key F2 (Chase)", expected: { mode: "chase", auto: false } },
+            { keyCode: "F3", label: "Key F3 (Engine)", expected: { mode: "engine", auto: false } },
+            { keyCode: "F4", label: "Key F4 (Station)", expected: { mode: "station", auto: false } },
+            { keyCode: "F5", label: "Key F5 (Free)", expected: { mode: "free", auto: false } },
+            { keyCode: "F6", label: "Key F6 (Map)", expected: { mode: "map", auto: false } },
+            { keyCode: "F7", label: "Key F7 (Booster)", expected: { mode: "booster", target: "booster", auto: false } },
+            { keyCode: "F8", label: "Key F8 On (Auto -> Pad)", expected: { mode: "pad", target: "booster", auto: true } },
+            { keyCode: "F8", label: "Key F8 Off", expected: { mode: "pad", target: "booster", auto: false } },
+            { keyCode: "F7", label: "Key F7 Re-enter Booster", expected: { mode: "booster", target: "booster", auto: false } },
+          ];
+          for (const item of keySweep) {
+            win.webContents.sendInputEvent({ type: "keyDown", keyCode: item.keyCode });
+            win.webContents.sendInputEvent({ type: "keyUp", keyCode: item.keyCode });
+            await verifyCam(item.label, item.expected);
+          }
+
+          await win.webContents.executeJavaScript("document.querySelector('[data-track-target=\"ship\"]')?.click()");
+          await verifyCam("Track Ship from F7 -> Chase", { mode: "chase", target: "ship", auto: false });
+
+          await win.webContents.executeJavaScript("document.querySelector('[data-track-target=\"booster\"]')?.click()");
+          await verifyCam("Track Booster in Chase", { mode: "chase", target: "booster", auto: false });
+
+          await win.webContents.executeJavaScript("document.querySelector('[data-cam-mode=\"engine\"]')?.click()");
+          await verifyCam("F3 Engine on Booster", { mode: "engine", target: "booster", auto: false });
+
+          await win.webContents.executeJavaScript("document.querySelector('[data-cam-action=\"relock\"]')?.click()");
+          await verifyCam("Re-lock on Booster", { mode: "engine", target: "booster", auto: false });
+
+          // Return to default startup camera cleanly
+          await win.webContents.executeJavaScript("document.querySelector('[data-track-target=\"ship\"]')?.click(); document.querySelector('[data-cam-mode=\"free\"]')?.click()");
+          await verifyCam("Return Free on Ship", { mode: "free", target: "ship", auto: false });
+
+          const postDiag = await win.webContents.executeJavaScript(`
+            (() => {
+              const canvas = document.getElementById('sim-canvas');
+              const rect = canvas ? canvas.getBoundingClientRect() : null;
+              return {
+                title: document.title,
+                readyState: document.readyState,
+                hasDesktopBridge: Boolean(window.desktopApp && window.desktopApp.isElectron),
+                hudChildren: document.getElementById('hud-root')?.children.length || 0,
+                fatalBanner: document.getElementById('aether-fatal-banner')?.textContent || null,
+                canvasWidth: rect ? Math.round(rect.width) : 0,
+                canvasHeight: rect ? Math.round(rect.height) : 0,
+                sim: window.__STARSHIP_SIM__ || null,
+                cameraSweepPassed: true,
+                cameraSweep: ${JSON.stringify(sweepSteps)},
+              };
+            })()
+          `);
+          postDiag.cameraSweep = sweepSteps;
+          postDiag.cameraSweepPassed = sweepSteps.every((s) => s.passed);
+          finalizeSmoke(postDiag, postDiag.cameraSweepPassed);
         } else if (elapsedMs >= SMOKE_TIMEOUT_MS || settleTimedOut) {
           finalizeSmoke(diagnostics, false);
         }
@@ -410,7 +516,33 @@ function createWindow() {
   }
 }
 
+function installApplicationMenu() {
+  const template = [
+    {
+      label: "AetherSim",
+      submenu: [
+        { role: "reload", accelerator: "CmdOrCtrl+R" },
+        { role: "forceReload", accelerator: "CmdOrCtrl+Shift+R" },
+        {
+          label: "Toggle Developer Tools",
+          accelerator: process.platform === "darwin" ? "Alt+Command+I" : "Ctrl+Shift+I",
+          click: (_item, focusedWindow) => {
+            if (focusedWindow) {
+              focusedWindow.webContents.toggleDevTools();
+            }
+          },
+        },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(() => {
+  installApplicationMenu();
   installDevCspHeaders();
   createWindow();
 

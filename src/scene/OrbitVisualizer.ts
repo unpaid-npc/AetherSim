@@ -56,10 +56,11 @@ function drawMarkerCanvas(
   accentHex: string,
   labelText: string
 ): void {
-  if (entry.lastLabel === labelText) {
+  const key = `${accentHex}|${labelText}`;
+  if (entry.lastLabel === key) {
     return;
   }
-  entry.lastLabel = labelText;
+  entry.lastLabel = key;
   const { ctx, canvas } = entry;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -137,6 +138,7 @@ export class OrbitVisualizer {
   private readonly boosterArcMat: THREE.LineDashedMaterial;
   private readonly boosterArcLine: THREE.Line;
 
+  private readonly trailWorld = new Float64Array(MAX_TRAIL_POINTS * 3);
   private readonly trailPositions = new Float32Array(MAX_TRAIL_POINTS * 3);
   private trailCount = 0;
   private lastTrailPos = new THREE.Vector3();
@@ -151,8 +153,13 @@ export class OrbitVisualizer {
   private readonly padMarker: MarkerSpriteEntry;
 
   private activeConfig: PlanetConfig;
+  private siteShortName = "STARBASE";
   private enabled = true;
   private prevRunning = false;
+  private readonly scratchShipWorldPos = new THREE.Vector3();
+  private readonly scratchShipPos = new THREE.Vector3();
+  private readonly scratchPadPos = new THREE.Vector3();
+  private readonly scratchBoosterPos = new THREE.Vector3();
 
   constructor(initialConfig: PlanetConfig) {
     this.activeConfig = initialConfig;
@@ -238,6 +245,10 @@ export class OrbitVisualizer {
     this.group.visible = enabled;
   }
 
+  setSiteShortName(name: string): void {
+    this.siteShortName = name;
+  }
+
   isEnabled(): boolean {
     return this.enabled;
   }
@@ -280,26 +291,28 @@ export class OrbitVisualizer {
     if (this.trailCount >= MAX_TRAIL_POINTS) {
       let dst = 0;
       for (let src = 0; src < MAX_TRAIL_POINTS; src += 2) {
-        this.trailPositions[dst * 3] = this.trailPositions[src * 3];
-        this.trailPositions[dst * 3 + 1] = this.trailPositions[src * 3 + 1];
-        this.trailPositions[dst * 3 + 2] = this.trailPositions[src * 3 + 2];
+        this.trailWorld[dst * 3] = this.trailWorld[src * 3];
+        this.trailWorld[dst * 3 + 1] = this.trailWorld[src * 3 + 1];
+        this.trailWorld[dst * 3 + 2] = this.trailWorld[src * 3 + 2];
         dst += 1;
       }
       this.trailCount = dst;
     }
     const off = this.trailCount * 3;
-    this.trailPositions[off] = x;
-    this.trailPositions[off + 1] = y;
-    this.trailPositions[off + 2] = z;
+    this.trailWorld[off] = x;
+    this.trailWorld[off + 1] = y;
+    this.trailWorld[off + 2] = z;
     this.trailCount += 1;
     this.lastTrailPos.set(x, y, z);
-
-    const attr = this.trailGeo.getAttribute("position") as THREE.BufferAttribute;
-    attr.needsUpdate = true;
     this.trailGeo.setDrawRange(0, this.trailCount);
   }
 
-  private updateBoosterReturnArc(tel: FlightTelemetry, R: number, mu: number): void {
+  private updateBoosterReturnArc(
+    tel: FlightTelemetry,
+    R: number,
+    mu: number,
+    origin: { readonly x: number; readonly y: number; readonly z: number }
+  ): void {
     let bx = tel.booster.position.x;
     let by = tel.booster.position.y;
     let bz = tel.booster.position.z;
@@ -307,12 +320,12 @@ export class OrbitVisualizer {
     let vy = tel.booster.velocity.y;
     let vz = tel.booster.velocity.z;
 
-    const dtStep = 1.6;
+    const dtStep = 4.5;
     let impacted = false;
     for (let i = 0; i < MAX_BOOSTER_ARC_POINTS; i++) {
-      this.boosterArcPositions[i * 3] = bx;
-      this.boosterArcPositions[i * 3 + 1] = by;
-      this.boosterArcPositions[i * 3 + 2] = bz;
+      this.boosterArcPositions[i * 3] = bx - origin.x;
+      this.boosterArcPositions[i * 3 + 1] = by - origin.y;
+      this.boosterArcPositions[i * 3 + 2] = bz - origin.z;
       if (impacted) {
         continue;
       }
@@ -345,7 +358,12 @@ export class OrbitVisualizer {
   update(
     tel: FlightTelemetry,
     camera: THREE.PerspectiveCamera,
-    camAltM: number
+    camAltM: number,
+    renderOrigin: { readonly x: number; readonly y: number; readonly z: number } = {
+      x: 0,
+      y: 0,
+      z: 0,
+    }
   ): void {
     const showInMode = this.enabled && tel.missionMode === "launch";
     this.group.visible = showInMode;
@@ -355,15 +373,25 @@ export class OrbitVisualizer {
 
     const R = this.activeConfig.scale.simRadiusM;
     const mu = computeGravitationalParameter(this.activeConfig.physics.gravityMps2, R);
-    const shipPos = new THREE.Vector3(tel.position.x, tel.position.y, tel.position.z);
-    const padPos = new THREE.Vector3(0, tel.padDeckY, 0);
+
+    const shipWorldPos = this.scratchShipWorldPos.set(tel.position.x, tel.position.y, tel.position.z);
+    const shipRenderPos = this.scratchShipPos.set(
+      tel.position.x - renderOrigin.x,
+      tel.position.y - renderOrigin.y,
+      tel.position.z - renderOrigin.z
+    );
+    const padRenderPos = this.scratchPadPos.set(
+      -renderOrigin.x,
+      tel.padDeckY - renderOrigin.y,
+      -renderOrigin.z
+    );
 
     if (tel.running && tel.phase !== "PRELAUNCH" && tel.phase !== "COUNTDOWN") {
       if (!this.prevRunning || this.trailCount === 0) {
         this.appendTrailPoint(tel.position.x, tel.position.y, tel.position.z);
       } else {
-        const minSpacing = Math.max(40, tel.altitudeM * 0.015);
-        if (this.lastTrailPos.distanceTo(shipPos) >= minSpacing) {
+        const minSpacing = Math.max(250, tel.altitudeM * 0.015);
+        if (this.lastTrailPos.distanceTo(shipWorldPos) >= minSpacing) {
           this.appendTrailPoint(tel.position.x, tel.position.y, tel.position.z);
         }
       }
@@ -374,17 +402,28 @@ export class OrbitVisualizer {
       }
     }
 
-    const camDistToShip = camera.position.distanceTo(shipPos);
-    const camDistToPad = camera.position.distanceTo(padPos);
-    const showOverview = camAltM > 2200 || camDistToPad > 2800 || tel.altitudeM > 1200;
+    const camDistToShip = camera.position.distanceTo(shipRenderPos);
+    const camDistToPad = camera.position.distanceTo(padRenderPos);
+    const showOverview = camAltM > 14_000 || camDistToPad > 18_000 || tel.altitudeM > 10_000;
 
     if (this.targetRingLine) {
+      this.targetRingLine.position.set(-renderOrigin.x, -renderOrigin.y, -renderOrigin.z);
       this.targetRingLine.visible = showOverview;
     }
     this.trailLine.visible = showOverview && this.trailCount >= 2;
+    if (this.trailLine.visible) {
+      for (let i = 0; i < this.trailCount; i++) {
+        const o = i * 3;
+        this.trailPositions[o] = this.trailWorld[o] - renderOrigin.x;
+        this.trailPositions[o + 1] = this.trailWorld[o + 1] - renderOrigin.y;
+        this.trailPositions[o + 2] = this.trailWorld[o + 2] - renderOrigin.z;
+      }
+      const attr = this.trailGeo.getAttribute("position") as THREE.BufferAttribute;
+      attr.needsUpdate = true;
+    }
 
     const showArc =
-      tel.altitudeM > 350 &&
+      tel.altitudeM > 1500 &&
       tel.phase !== "PRELAUNCH" &&
       tel.phase !== "COUNTDOWN" &&
       tel.phase !== "CRASHED";
@@ -393,9 +432,9 @@ export class OrbitVisualizer {
       const pts = sampleOrbitPoints(tel.position, tel.velocity, R, mu, MAX_TRAJECTORY_POINTS - 2);
       const count = Math.min(MAX_TRAJECTORY_POINTS, pts.length);
       for (let i = 0; i < count; i++) {
-        this.predictedPositions[i * 3] = pts[i].x;
-        this.predictedPositions[i * 3 + 1] = pts[i].y;
-        this.predictedPositions[i * 3 + 2] = pts[i].z;
+        this.predictedPositions[i * 3] = pts[i].x - renderOrigin.x;
+        this.predictedPositions[i * 3 + 1] = pts[i].y - renderOrigin.y;
+        this.predictedPositions[i * 3 + 2] = pts[i].z - renderOrigin.z;
       }
       const attr = this.predictedGeo.getAttribute("position") as THREE.BufferAttribute;
       attr.needsUpdate = true;
@@ -415,17 +454,17 @@ export class OrbitVisualizer {
       showOverview &&
       tel.stageSeparated &&
       tel.booster.active &&
-      tel.booster.altitudeM > 60;
+      tel.booster.altitudeM > 150;
     this.boosterArcLine.visible = showBoosterArc;
     if (showBoosterArc) {
-      this.updateBoosterReturnArc(tel, R, mu);
+      this.updateBoosterReturnArc(tel, R, mu, renderOrigin);
     }
 
     // Strict SHIP distance threshold (>= 2500m) prevents oversized billboard sprite in close-up views
     const showShip = camDistToShip >= 2500;
     this.shipMarker.sprite.visible = showShip;
     if (showShip) {
-      this.shipMarker.sprite.position.copy(shipPos);
+      this.shipMarker.sprite.position.copy(shipRenderPos);
       const altLabel =
         tel.altitudeM >= 1000
           ? `SHIP ${(tel.altitudeM / 1000).toFixed(1)}km`
@@ -435,12 +474,12 @@ export class OrbitVisualizer {
     }
 
     // Compact BOOSTER beacon when separated and viewed from >= 2500m
-    const bPos = new THREE.Vector3(
-      tel.booster.position.x,
-      tel.booster.position.y,
-      tel.booster.position.z
+    const bRenderPos = this.scratchBoosterPos.set(
+      tel.booster.position.x - renderOrigin.x,
+      tel.booster.position.y - renderOrigin.y,
+      tel.booster.position.z - renderOrigin.z
     );
-    const camDistToBooster = camera.position.distanceTo(bPos);
+    const camDistToBooster = camera.position.distanceTo(bRenderPos);
     const showBoosterMarker =
       tel.stageSeparated &&
       tel.booster.status !== "NONE" &&
@@ -448,7 +487,7 @@ export class OrbitVisualizer {
       camDistToBooster >= 2500;
     this.boosterMarker.sprite.visible = showBoosterMarker;
     if (showBoosterMarker) {
-      this.boosterMarker.sprite.position.copy(bPos);
+      this.boosterMarker.sprite.position.copy(bRenderPos);
       const bText =
         tel.booster.status === "BOOSTER_CAUGHT"
           ? "BSTR CAUGHT"
@@ -465,28 +504,32 @@ export class OrbitVisualizer {
       updateMarkerScreenScale(this.boosterMarker, camera);
     }
 
-    const showPad = camDistToPad > 3000;
+    const showPad = camDistToPad > 15_000;
     this.padMarker.sprite.visible = showPad;
     if (showPad) {
-      this.padMarker.sprite.position.copy(padPos);
-      drawMarkerCanvas(this.padMarker, "#cbd5e1", `${this.activeConfig.name} PAD`);
+      this.padMarker.sprite.position.copy(padRenderPos);
+      const padLabel =
+        this.activeConfig.id === "earth"
+          ? `${this.siteShortName} PAD`
+          : `${this.activeConfig.name} PAD`;
+      drawMarkerCanvas(this.padMarker, "#cbd5e1", padLabel);
       updateMarkerScreenScale(this.padMarker, camera);
     }
 
     const orb = tel.orbital;
     const showAp =
       showOverview &&
-      tel.altitudeM > 1000 &&
+      tel.altitudeM > 5000 &&
       orb.isBoundOrbit &&
       orb.apoapsisWorldPos !== null &&
       Number.isFinite(orb.apoapsisAltM) &&
-      orb.apoapsisAltM > 100;
+      orb.apoapsisAltM > 500;
     this.apMarker.sprite.visible = showAp;
     if (showAp && orb.apoapsisWorldPos) {
       this.apMarker.sprite.position.set(
-        orb.apoapsisWorldPos.x,
-        orb.apoapsisWorldPos.y,
-        orb.apoapsisWorldPos.z
+        orb.apoapsisWorldPos.x - renderOrigin.x,
+        orb.apoapsisWorldPos.y - renderOrigin.y,
+        orb.apoapsisWorldPos.z - renderOrigin.z
       );
       drawMarkerCanvas(this.apMarker, "#34d399", `AP ${(orb.apoapsisAltM / 1000).toFixed(1)} km`);
       updateMarkerScreenScale(this.apMarker, camera);
@@ -494,16 +537,16 @@ export class OrbitVisualizer {
 
     const showPe =
       showOverview &&
-      tel.altitudeM > 1000 &&
+      tel.altitudeM > 5000 &&
       orb.isBoundOrbit &&
       orb.periapsisWorldPos !== null &&
       orb.periapsisAltM > 0;
     this.peMarker.sprite.visible = showPe;
     if (showPe && orb.periapsisWorldPos) {
       this.peMarker.sprite.position.set(
-        orb.periapsisWorldPos.x,
-        orb.periapsisWorldPos.y,
-        orb.periapsisWorldPos.z
+        orb.periapsisWorldPos.x - renderOrigin.x,
+        orb.periapsisWorldPos.y - renderOrigin.y,
+        orb.periapsisWorldPos.z - renderOrigin.z
       );
       drawMarkerCanvas(this.peMarker, "#fbbf24", `PE ${(orb.periapsisAltM / 1000).toFixed(1)} km`);
       updateMarkerScreenScale(this.peMarker, camera);

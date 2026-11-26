@@ -53,6 +53,9 @@ uniform float uNightOpacity;
 uniform float uIsEarth;
 uniform float uIsMoon;
 uniform float uMicroDetailStrength;
+uniform float uLocalTerrainCutoutRadius;
+uniform float uSimRadius;
+uniform vec3 uPadRenderPos;
 
 varying vec3 vLocalDir;
 varying vec3 vWorldNormal;
@@ -87,6 +90,18 @@ float valueNoise3D(vec3 p) {
 
 void main() {
   #include <logdepthbuf_fragment>
+
+  // Eliminate any low-altitude Z-fighting shards beneath the opaque local terrain/ocean disc
+  float cutoutFade = 1.0 - smoothstep(8000.0, 14000.0, uCameraAltitude);
+  float activeCutoutR = uLocalTerrainCutoutRadius * cutoutFade;
+  vec3 relPad = vWorldPos - uPadRenderPos;
+  if (
+    activeCutoutR > 1.0 &&
+    relPad.y > -uSimRadius * 0.25 &&
+    length(relPad.xz) < activeCutoutR
+  ) {
+    discard;
+  }
 
   vec3 localDir = normalize(vLocalDir);
   vec3 N = normalize(vWorldNormal);
@@ -186,21 +201,27 @@ export function createPlanetSurfaceMaterial(): THREE.ShaderMaterial {
     vertexShader: SURFACE_VERTEX_SHADER,
     fragmentShader: SURFACE_FRAGMENT_SHADER,
     fog: false,
+    polygonOffset: true,
+    polygonOffsetFactor: 4,
+    polygonOffsetUnits: 4,
     uniforms: {
       uDayMap: { value: null },
       uSpecularMap: { value: null },
       uNightMap: { value: null },
-      uSunDirection: { value: new THREE.Vector3(0.58, 0.44, -0.68).normalize() },
-      uSunColor: { value: new THREE.Color("#fff3df") },
-      uSunIntensity: { value: 3.4 },
-      uHemiSkyColor: { value: new THREE.Color("#7ab4e8") },
-      uHemiGroundColor: { value: new THREE.Color("#364432") },
-      uHemiIntensity: { value: 0.85 },
+      uSunDirection: { value: new THREE.Vector3(0.68, 0.56, 0.47).normalize() },
+      uSunColor: { value: new THREE.Color("#fff5e4") },
+      uSunIntensity: { value: 3.3 },
+      uHemiSkyColor: { value: new THREE.Color("#9cd3ff") },
+      uHemiGroundColor: { value: new THREE.Color("#b8aa8e") },
+      uHemiIntensity: { value: 0.95 },
       uCameraAltitude: { value: 0 },
       uNightOpacity: { value: 0 },
       uIsEarth: { value: 0 },
       uIsMoon: { value: 0 },
       uMicroDetailStrength: { value: 0.09 },
+      uLocalTerrainCutoutRadius: { value: 9500.0 },
+      uSimRadius: { value: 6371000.0 },
+      uPadRenderPos: { value: new THREE.Vector3(0, 0, 0) },
     },
   });
 }

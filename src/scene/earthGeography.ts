@@ -312,19 +312,60 @@ export function geoToSphereUnitVector(latDeg: number, lonDeg: number): [number, 
   ];
 }
 
+export interface LocalENUFrame {
+  readonly east: THREE.Vector3;
+  readonly up: THREE.Vector3;
+  readonly north: THREE.Vector3;
+}
+
+/**
+ * Computes orthonormal local East-North-Up basis vectors in sphere-local space at `(latDeg, lonDeg)`
+ * matching `geoToSphereUnitVector`: `east` points toward +lon, `up` is outward radial, `north` toward +lat.
+ */
+export function geoToLocalENU(latDeg: number, lonDeg: number): LocalENUFrame {
+  const effectiveLon = Math.abs(latDeg) > 89.999 ? 0 : lonDeg;
+  const phi = ((effectiveLon + 180) / 360) * Math.PI * 2;
+  const theta = ((90 - latDeg) / 180) * Math.PI;
+  const sinT = Math.sin(theta);
+  const cosT = Math.cos(theta);
+  const sinP = Math.sin(phi);
+  const cosP = Math.cos(phi);
+
+  const up = new THREE.Vector3(-cosP * sinT, cosT, sinP * sinT).normalize();
+  const east = new THREE.Vector3(sinP, 0, cosP).normalize();
+  const north = new THREE.Vector3(cosP * cosT, sinT, -sinP * cosT).normalize();
+  return { east, up, north };
+}
+
 /**
  * Computes the Quaternion that rotates a planetary globe centered at (0, -simRadiusM, 0)
- * so that `launchSiteCoords` sits directly at the top zenith (0, 1, 0) beneath the launchpad.
+ * so that `launchSiteCoords` sits directly at top zenith (0, 1, 0) with true ENU orientation:
+ * geographic East -> +X (Gulf of Mexico), Up -> +Y, geographic North -> -Z.
  */
 export function computeLaunchSiteZenithQuaternion(
   latDeg: number,
   lonDeg: number
 ): THREE.Quaternion {
-  const [vx, vy, vz] = geoToSphereUnitVector(latDeg, lonDeg);
-  const localDir = new THREE.Vector3(vx, vy, vz).normalize();
-  const zenith = new THREE.Vector3(0, 1, 0);
-  if (localDir.y < -0.99999) {
-    return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
-  }
-  return new THREE.Quaternion().setFromUnitVectors(localDir, zenith);
+  const { east, up, north } = geoToLocalENU(latDeg, lonDeg);
+  const south = north.clone().negate();
+  // Inverse/transpose of orthonormal columns [east | up | south] maps east->+X, up->+Y, south->+Z
+  const rotMat = new THREE.Matrix4().set(
+    east.x,
+    east.y,
+    east.z,
+    0,
+    up.x,
+    up.y,
+    up.z,
+    0,
+    south.x,
+    south.y,
+    south.z,
+    0,
+    0,
+    0,
+    0,
+    1
+  );
+  return new THREE.Quaternion().setFromRotationMatrix(rotMat).normalize();
 }

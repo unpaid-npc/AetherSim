@@ -157,13 +157,13 @@ export function generatePlanetTextureSet(
         heightVal += strata * 0.14 - basaltMask * 0.12;
         roughVal = Math.max(0.68, Math.min(0.98, 0.92 - basaltMask * 0.16 + (detail - 0.5) * 0.12));
       } else if (config.id === "earth") {
-        // Coastal sandy soil blended with scrubland/grass patches
-        const grassMask = smoothstep(0.42, 0.68, macro * 0.72 + detail * 0.28);
-        const dampPatch = smoothstep(0.65, 0.84, detail);
-        rgb = mixRgb(cPrimary, cSecondary, grassMask);
-        rgb = mixRgb(rgb, cDark, dampPatch * 0.45);
-        heightVal = macro * 0.55 + detail * 0.45;
-        roughVal = Math.max(0.62, Math.min(0.96, 0.88 - dampPatch * 0.14 + (detail - 0.5) * 0.1));
+        // Sunlit coastal beach sand, fine grass blades, and warm dune scrub
+        const grassMask = smoothstep(0.44, 0.72, macro * 0.74 + detail * 0.26);
+        const ripplePatch = smoothstep(0.62, 0.86, detail);
+        rgb = mixRgb(cPrimary, cSecondary, grassMask * 0.82);
+        rgb = mixRgb(rgb, cDark, ripplePatch * 0.26);
+        heightVal = macro * 0.5 + detail * 0.5;
+        roughVal = Math.max(0.66, Math.min(0.92, 0.84 - ripplePatch * 0.08 + (detail - 0.5) * 0.08));
       } else {
         // Moon: silicate regolith with sharp micro-craters and bright ejecta
         const microCrater = microNoise.craterField(u * 256, v * 256, 48);

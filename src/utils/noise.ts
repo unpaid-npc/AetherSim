@@ -1,3 +1,4 @@
+import type { LaunchSiteConfig } from "../config/launchSites";
 import type { PlanetConfig } from "../config/planets";
 
 export const PAD_FLAT_RADIUS_M = 65;
@@ -208,6 +209,102 @@ export function computeCurvedSurfaceDrop(r: number, simRadiusM: number): number 
 }
 
 /**
+ * Deterministic Starbase Boca Chica shoreline X-coordinate (east of pad, running North-South along Z).
+ * Shared across coastal terrain elevation, shoreline vertex tinting, and Gulf ocean geometry.
+ */
+export function computeEarthShorelineX(z: number, noise: SeededNoise2D): number {
+  return 385 + noise.fbm(0, z * 0.00055, 3) * 42;
+}
+
+export function sampleEarthSiteTerrainHeight(
+  x: number,
+  z: number,
+  config: PlanetConfig,
+  noise: SeededNoise2D,
+  site?: LaunchSiteConfig
+): number {
+  const r = Math.hypot(x, z);
+  if (r <= PAD_FLAT_RADIUS_M) {
+    return 0;
+  }
+  const localR = config.scale.localTerrainRadiusM;
+  const sphereDrop = computeCurvedSurfaceDrop(r, config.scale.simRadiusM);
+  if (r >= localR) {
+    return sphereDrop;
+  }
+
+  const blend = smoothstep(PAD_FLAT_RADIUS_M, PAD_BLEND_RADIUS_M, r);
+  const outerTaper = 1 - smoothstep(localR * 0.6, localR * 0.92, r);
+
+  // Inland arid steppe (e.g. Baikonur Cosmodrome): dry Kazakh plain with zero ocean
+  if (site && !site.hasOcean) {
+    const steppeWave = noise.fbm(x * 0.0018 + 3.1, z * 0.0018 - 1.7, 4) * 0.5 + 0.5;
+    const ridge = noise.ridged(x * 0.0009, z * 0.0009, 3) * 2.4;
+    let rawSteppeY = 0.45 + steppeWave * 3.4 + ridge;
+    const railCorridor =
+      (1 - smoothstep(14, 42, Math.abs(z - 84))) * (1 - smoothstep(260, 420, x));
+    rawSteppeY = rawSteppeY * (1 - railCorridor) + 0.3 * railCorridor;
+    return blend * rawSteppeY * outerTaper + sphereDrop;
+  }
+
+  // Orient coastline according to launch site coast azimuth (default 90 deg = East +X)
+  const azDeg = site?.coastAzimuthDeg ?? 90;
+  let coastU = x;
+  let coastT = z;
+  if (Math.abs(azDeg - 90) > 0.1) {
+    const azRad = (azDeg * Math.PI) / 180;
+    const s = Math.sin(azRad);
+    const c = Math.cos(azRad);
+    coastU = x * s - z * c;
+    coastT = x * c + z * s;
+  }
+
+  const xShore = computeEarthShorelineX(coastT, noise);
+  const dShore = coastU - xShore;
+  let rawCoastalY: number;
+
+  if (site?.biome === "coastal_bluff") {
+    // Tanegashima scenic green hills & elevated volcanic bluff descending into Pacific surf
+    if (dShore < -55) {
+      const hillMask = smoothstep(220, 750, -dShore);
+      const bluffHills = (noise.fbm(x * 0.002 + 7.2, z * 0.002 + 2.4, 4) * 0.5 + 0.5) * 22.0;
+      const roadFlat =
+        (1 - smoothstep(14, 40, Math.abs(z - 78))) * (1 - smoothstep(230, 310, x));
+      rawCoastalY = (1.1 + bluffHills * hillMask) * (1 - roadFlat) + 0.35 * roadFlat;
+    } else if (dShore <= 55) {
+      const slope = 2.6 - smoothstep(-55, 55, dShore) * 3.4;
+      rawCoastalY = slope;
+    } else {
+      const shelfT = smoothstep(55, 880, dShore);
+      rawCoastalY = -0.8 - shelfT * 17.5;
+    }
+    return blend * rawCoastalY * outerTaper + sphereDrop;
+  }
+
+  if (dShore < -55) {
+    // Flat coastal plain & sandy dunes (+ shallow marsh pocket West-NW)
+    const duneWave = noise.fbm(x * 0.0022, z * 0.0022, 3) * 0.5 + 0.5;
+    const rolling = 0.65 + duneWave * 2.65;
+    const marshMask =
+      smoothstep(-220, -480, coastU) * smoothstep(-60, -280, coastT) * (0.6 + 0.4 * duneWave);
+    rawCoastalY = rolling * (1 - marshMask * 0.85) - marshMask * 0.35;
+
+    const hwyCorridor =
+      (1 - smoothstep(14, 42, Math.abs(z - 78))) * (1 - smoothstep(230, 310, x));
+    rawCoastalY = rawCoastalY * (1 - hwyCorridor) + 0.35 * hwyCorridor;
+  } else if (dShore <= 55) {
+    const berm = smoothstep(-55, -28, dShore) * (1 - smoothstep(-28, 0, dShore)) * 1.45;
+    const slope = 1.65 - smoothstep(-55, 55, dShore) * 2.25;
+    rawCoastalY = slope + berm;
+  } else {
+    const shelfT = smoothstep(55, 880, dShore);
+    rawCoastalY = -0.6 - shelfT * 15.9;
+  }
+
+  return blend * rawCoastalY * outerTaper + sphereDrop;
+}
+
+/**
  * Sample deterministic spherically curved planetary terrain height at world (x, z) meters.
  * Guarantees strictly 0.0 inside `r <= 65 m` so the launchpad apron sits flush,
  * and smoothly tapers relief into the underlying globe curve toward `localTerrainRadiusM`.
@@ -216,7 +313,8 @@ export function samplePlanetTerrainHeight(
   x: number,
   z: number,
   config: PlanetConfig,
-  noise: SeededNoise2D
+  noise: SeededNoise2D,
+  site?: LaunchSiteConfig
 ): number {
   const r = Math.hypot(x, z);
   if (r <= PAD_FLAT_RADIUS_M) {
@@ -229,8 +327,13 @@ export function samplePlanetTerrainHeight(
     return sphereDrop;
   }
 
+  if (config.id === "earth") {
+    return sampleEarthSiteTerrainHeight(x, z, config, noise, site);
+  }
+
   const blend = smoothstep(PAD_FLAT_RADIUS_M, PAD_BLEND_RADIUS_M, r);
   const outerTaper = 1 - smoothstep(localR * 0.6, localR * 0.92, r);
+
   const { terrain } = config;
   const fx = x * terrain.noiseFrequency;
   const fz = z * terrain.noiseFrequency;

@@ -1,7 +1,7 @@
 # AetherSim — System & Aerospace Simulation Ecosystem Architecture
 
 > [!IMPORTANT]
-> **Implementation Boundary:** AetherSim `v0.3.0` implements **Phase A** (the real-time 3D Electron/Three.js interactive simulator and headless TypeScript flight physics core). The full **14-Module Aerospace Simulation Ecosystem** described in this specification defines the target multi-regime reference architecture guiding Milestones 2–4 and Phases B/C. Modules marked **Planned** do not exist in the runnable application yet.
+> **Implementation Boundary (`v2.0.0`):** AetherSim `v2.0.0` completes **Phase A** (Milestones 1–6): the real-time `1:1` real-scale 3D Electron/Three.js desktop simulator with 6 global Earth launch sites, 4 selectable rockets, autonomous Booster RTLS recovery, live CelesTrak SGP4 satellite & ISS tracking (`satellite.js`), continuous PPO neural AI, 5-tab Aerospace Research Lab, and standalone Windows packaging. The full **14-Module Aerospace Simulation Ecosystem** described in this specification defines the target multi-regime reference architecture guiding **Phases B & C**. Modules marked **Planned** do not exist in the runnable application yet.
 
 ---
 
@@ -32,7 +32,7 @@ Complex aerospace systems cannot be simulated accurately by a single monolithic 
 - **Integration:** Drives Module 2 (atmosphere/albedo) and Module 5 (orbital frame handoff).
 - **Verification:** Conservation of vis-viva energy & angular momentum; GMAT/STK reference trajectory cross-checks.
 - **Assumptions:** Point-mass central body at L1; no relativistic effects below orbital velocities.
-- **AetherSim Status:** **Partially Implemented (Phase A)** — Orbital stations animate along elliptical sky paths (`LaunchComplex.ts`); vehicle dynamics use constant-gravity local-tangent frame (`FlightController.ts`). Full spherical N-body orbital propagator is **Planned (Phase B)**.
+- **AetherSim Status:** **Implemented (L1 Orbital + SGP4, Phase A `v2.0.0`)** — Spherical 2-body central-body launch dynamics around true `1:1` planets (`Earth 6,371 km`, `Mars 3,389.5 km`, `Moon 1,737.4 km`), live Keplerian elements (`OrbitalMechanics.ts`, `FlightController.ts`), and `satellite.js` SGP4 propagation + ±1-orbit Earth ground tracks for 13 curated Earth orbital objects including the ISS (`SatelliteCatalog.ts`, `CelesTrakService.ts`, `OrbitalObjectManager.ts`). Full rotating-planet N-body / J2–Jn / interplanetary Lambert transfer propagation remains **Planned (Phase B)**.
 
 ### Module 2 — Atmospheric, Planetary & Space Environment
 - **Purpose:** Provide physically grounded planetary gravity, barometric profiles, winds, terrain elevation, and radiation/space weather.

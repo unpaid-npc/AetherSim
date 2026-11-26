@@ -7,6 +7,9 @@ import electronBinary from "electron";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
+const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
+const appVersion = pkg.version || "2.0.0";
+const majorPrefix = `v${String(appVersion).split(".")[0]}`;
 
 const distIndex = path.join(rootDir, "dist", "index.html");
 if (!fs.existsSync(distIndex)) {
@@ -60,6 +63,7 @@ const hostInfo = {
 };
 
 const output = {
+  version: appVersion,
   generatedAtIso: new Date().toISOString(),
   profileStatus: parsed.profileStatus,
   host: hostInfo,
@@ -73,8 +77,9 @@ const docsDir = path.join(rootDir, "docs");
 fs.mkdirSync(resultsDir, { recursive: true });
 fs.mkdirSync(docsDir, { recursive: true });
 
+const profileFileName = `${majorPrefix}_performance_profile.json`;
 fs.writeFileSync(
-  path.join(resultsDir, "v1_performance_profile.json"),
+  path.join(resultsDir, profileFileName),
   JSON.stringify(output, null, 2)
 );
 
@@ -87,9 +92,9 @@ const tableRows = output.samples.map((s) => {
   return `| **${s.planet.toUpperCase()}** | \`${s.quality.toUpperCase()}\` | **${s.avgFps.toFixed(1)}** | ${s.p50FrameMs.toFixed(2)} ms | ${s.p95FrameMs.toFixed(2)} ms | ${s.drawCalls} | ${s.triangles.toLocaleString("en-US")} | ${heapStr} |`;
 });
 
-const reportMd = `# AetherSim v1.0.0 — Desktop GPU & FPS Performance Report
+const reportMd = `# AetherSim v${appVersion} — Desktop GPU & FPS Performance Report
 
-Measured directly inside the built Electron desktop application via \`npm run profile:desktop\` ([scripts/profile-desktop.mjs](../scripts/profile-desktop.mjs)), with raw frame telemetry saved in [results/v1_performance_profile.json](../results/v1_performance_profile.json).
+Measured directly inside the built Electron desktop application via \`npm run profile:desktop\` ([scripts/profile-desktop.mjs](../scripts/profile-desktop.mjs)), with raw frame telemetry saved in [results/${profileFileName}](../results/${profileFileName}).
 
 ---
 

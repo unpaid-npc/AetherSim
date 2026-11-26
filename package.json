@@ -1,7 +1,8 @@
 {
   "name": "aethersim",
-  "version": "1.1.0",
-  "description": "AetherSim — Real-time 3D aerospace launch, propulsive landing, and planetary flight simulator built with Electron, Three.js, TypeScript, and custom GLSL shaders.",
+  "version": "2.0.0",
+  "author": "AetherSim Contributors",
+  "description": "AetherSim — Real-time 1:1 3D aerospace launch, propulsive landing, global spaceport, rocket fleet, and live SGP4 orbital simulator built with Electron, Three.js, TypeScript, and custom GLSL shaders.",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -56,11 +57,13 @@
   },
   "dependencies": {
     "gsap": "^3.15.1",
+    "satellite.js": "^7.2.0",
     "three": "^0.187.0"
   },
   "devDependencies": {
     "@types/three": "^0.187.0",
     "electron": "^45.4.1",
+    "electron-builder": "^26.18.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.8",
     "vitest": "^5.1.1"
