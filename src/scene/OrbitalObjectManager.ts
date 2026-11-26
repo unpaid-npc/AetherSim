@@ -481,6 +481,7 @@ export class OrbitalObjectManager {
   private readonly allOrbitsGeo: THREE.BufferGeometry;
   private readonly allOrbitsMat: THREE.LineBasicMaterial;
   private readonly allOrbitsLine: THREE.LineSegments;
+  private readonly earthshineLight: THREE.PointLight;
 
   private activePlanet: PlanetConfig;
   private activeSite: LaunchSiteConfig;
@@ -591,6 +592,10 @@ export class OrbitalObjectManager {
     this.allOrbitsLine.visible = false;
     this.allOrbitsLine.renderOrder = 5;
 
+    // Subtle planetary Earthshine / albedo bounce rim fill light active ONLY during 3D satellite inspection
+    this.earthshineLight = new THREE.PointLight("#7ec8ff", 1.55, 360, 0);
+    this.earthshineLight.visible = false;
+
     this.planetCenterLinesRoot.add(
       this.allOrbitsLine,
       this.groundTrackLine,
@@ -600,7 +605,8 @@ export class OrbitalObjectManager {
       this.planetCenterLinesRoot,
       this.nadirLine,
       this.spacecraftRoot,
-      this.markersRoot
+      this.markersRoot,
+      this.earthshineLight
     );
 
     this.rebuildCatalogForPlanet(initialPlanet, initialSite);
@@ -905,6 +911,7 @@ export class OrbitalObjectManager {
         "position",
         new THREE.BufferAttribute(pathPts, 3)
       );
+      this.selectedOrbitGeo.setDrawRange(0, pathPts.length / 3);
       this.selectedOrbitMat.color.set(selected.entry.def.accentHex);
 
       const gt = sampleGroundTrack(
@@ -919,6 +926,7 @@ export class OrbitalObjectManager {
         "position",
         new THREE.BufferAttribute(gt.planetCenteredPoints, 3)
       );
+      this.groundTrackGeo.setDrawRange(0, gt.planetCenteredPoints.length / 3);
     }
 
     if (this.visibility.showAllOrbitRings) {
@@ -949,6 +957,7 @@ export class OrbitalObjectManager {
         }
       }
       this.allOrbitsGeo.setAttribute("position", new THREE.BufferAttribute(buf, 3));
+      this.allOrbitsGeo.setDrawRange(0, buf.length / 3);
     }
   }
 
@@ -1012,6 +1021,7 @@ export class OrbitalObjectManager {
     }
 
     let nadirShown = false;
+    let earthshineShown = false;
 
     for (let i = 0; i < this.managed.length; i++) {
       const item = this.managed[i];
@@ -1055,6 +1065,26 @@ export class OrbitalObjectManager {
           this.scratchMat4.makeBasis(this.scratchRight, this.scratchUp, this.scratchFwd);
           this.scratchQuat.setFromRotationMatrix(this.scratchMat4);
           item.meshGroup.quaternion.copy(this.scratchQuat);
+        }
+
+        // Position subtle planetary Earthshine rim fill light on the actively inspected / station spacecraft
+        if (isInspected || isStationTarget) {
+          const rimColor =
+            this.activePlanet.id === "earth"
+              ? "#7ec8ff"
+              : this.activePlanet.id === "mars"
+                ? "#e8a878"
+                : "#b8c0ce";
+          this.earthshineLight.color.set(rimColor);
+          this.earthshineLight.intensity = this.activePlanet.id === "moon" ? 1.15 : 1.65;
+          const rimOffset = Math.max(24, snap.inspectRadiusM * 1.45);
+          this.earthshineLight.position.set(
+            rx - this.scratchUp.x * rimOffset + this.scratchRight.x * (rimOffset * 0.55),
+            ry - this.scratchUp.y * rimOffset + this.scratchRight.y * (rimOffset * 0.55),
+            rz - this.scratchUp.z * rimOffset + this.scratchRight.z * (rimOffset * 0.55)
+          );
+          this.earthshineLight.visible = true;
+          earthshineShown = true;
         }
       }
 
@@ -1111,6 +1141,9 @@ export class OrbitalObjectManager {
 
     if (!nadirShown) {
       this.nadirLine.visible = false;
+    }
+    if (!earthshineShown) {
+      this.earthshineLight.visible = false;
     }
 
     if (this.beaconInst && showBeacons) {

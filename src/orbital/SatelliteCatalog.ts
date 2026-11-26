@@ -163,7 +163,7 @@ const STARLINK_TRAIN_DEFS: SatelliteDefinition[] = Array.from({ length: 6 }, (_,
   category: "starlink",
   meshStyle: "starlink",
   accentHex: "#94a3b8",
-  inspectRadiusM: 28,
+  inspectRadiusM: 9,
   description: "Representative LEO broadband constellation plane demonstrating orbital train spacing at 550 km",
   fallbackOmm: makeFallbackOmm({
     name: `STARLINK-310${i + 1}`,
@@ -190,7 +190,7 @@ export const EARTH_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "station",
     meshStyle: "iss",
     accentHex: "#38bdf8",
-    inspectRadiusM: 76,
+    inspectRadiusM: 56,
     description: "International Space Station modular orbital laboratory cruising at ~420 km LEO (51.6° inclination)",
     fallbackOmm: makeFallbackOmm({
       name: "ISS (ZARYA)",
@@ -215,7 +215,7 @@ export const EARTH_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "station",
     meshStyle: "tiangong",
     accentHex: "#22d3ee",
-    inspectRadiusM: 52,
+    inspectRadiusM: 20,
     description: "China Space Station modular orbital outpost orbiting at ~390 km LEO (41.5° inclination)",
     fallbackOmm: makeFallbackOmm({
       name: "CSS (TIANHE)",
@@ -240,7 +240,7 @@ export const EARTH_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "science",
     meshStyle: "hubble",
     accentHex: "#a78bfa",
-    inspectRadiusM: 34,
+    inspectRadiusM: 18,
     description: "Flagship 2.4 m optical/UV space observatory in 535 km low-inclination LEO (28.5°)",
     fallbackOmm: makeFallbackOmm({
       name: "HST",
@@ -265,7 +265,7 @@ export const EARTH_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "earth_obs",
     meshStyle: "earth_obs",
     accentHex: "#34d399",
-    inspectRadiusM: 32,
+    inspectRadiusM: 12,
     description: "10 m multispectral Copernicus land-monitoring satellite in 786 km Sun-synchronous polar orbit",
     fallbackOmm: makeFallbackOmm({
       name: "SENTINEL-2A",
@@ -290,7 +290,7 @@ export const EARTH_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "earth_obs",
     meshStyle: "earth_obs",
     accentHex: "#4ade80",
-    inspectRadiusM: 32,
+    inspectRadiusM: 12,
     description: "Polar-orbiting operational weather & atmospheric sounder at 824 km SSO (98.7°)",
     fallbackOmm: makeFallbackOmm({
       name: "NOAA 20",
@@ -315,7 +315,7 @@ export const EARTH_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "nav_geo",
     meshStyle: "gps",
     accentHex: "#fbbf24",
-    inspectRadiusM: 36,
+    inspectRadiusM: 13,
     description: "Medium Earth Orbit (20,200 km, 55°) next-generation PNT navigation spacecraft",
     fallbackOmm: makeFallbackOmm({
       name: "GPS BIII-1 (NAVSTAR 77)",
@@ -340,7 +340,7 @@ export const EARTH_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "nav_geo",
     meshStyle: "geo",
     accentHex: "#f59e0b",
-    inspectRadiusM: 38,
+    inspectRadiusM: 14,
     description: "Geostationary Earth weather satellite stationed at ~35,786 km altitude over the Americas",
     fallbackOmm: makeFallbackOmm({
       name: "GOES 16",
@@ -369,7 +369,7 @@ export const MOON_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "station",
     meshStyle: "gateway",
     accentHex: "#38bdf8",
-    inspectRadiusM: 58,
+    inspectRadiusM: 32,
     description: "Simulated cislunar staging outpost in an elliptical polar NRHO-inspired halo orbit",
     keplerianFallback: {
       semiMajorAxisKm: 1737.4 + 920,
@@ -392,7 +392,7 @@ export const MOON_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "science",
     meshStyle: "orbiter",
     accentHex: "#a78bfa",
-    inspectRadiusM: 32,
+    inspectRadiusM: 11,
     description: "Simulated 100 km polar lunar mapping & Shackleton South Pole reconnaissance orbiter",
     keplerianFallback: {
       semiMajorAxisKm: 1737.4 + 100,
@@ -418,7 +418,7 @@ export const MARS_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "station",
     meshStyle: "gateway",
     accentHex: "#fb923c",
-    inspectRadiusM: 64,
+    inspectRadiusM: 34,
     description: "Simulated low-Mars-orbit refueling & crew transfer station with centrifugal habitat ring",
     keplerianFallback: {
       semiMajorAxisKm: 3389.5 + 320,
@@ -441,7 +441,7 @@ export const MARS_SATELLITE_DEFINITIONS: readonly SatelliteDefinition[] = [
     category: "science",
     meshStyle: "orbiter",
     accentHex: "#34d399",
-    inspectRadiusM: 34,
+    inspectRadiusM: 11,
     description: "Simulated ~300 km near-polar HiRISE imaging & relay orbiter around Mars",
     keplerianFallback: {
       semiMajorAxisKm: 3389.5 + 300,
@@ -625,21 +625,31 @@ export function propagateSatelliteGeodetic(
   fixedGmstDate?: Date
 ): PropagatedGeodeticPoint | null {
   if (entry.def.planetId === "earth" && entry.satrec) {
-    let effectiveDate = sampleDate;
+    const periodMs = Math.max(60_000, entry.periodMin * 60_000);
     const maxAgeMs = 150 * 86_400_000;
-    if (
-      entry.dataSource === "simulated" &&
-      Math.abs(sampleDate.getTime() - entry.ommEpochMs) > maxAgeMs
-    ) {
-      const periodMs = Math.max(60_000, entry.periodMin * 60_000);
-      const phaseMs =
-        (((sampleDate.getTime() - entry.ommEpochMs) % periodMs) + periodMs) % periodMs;
-      effectiveDate = new Date(entry.ommEpochMs + phaseMs);
+    const mapDateNearEpoch = (d: Date): Date => {
+      if (entry.dataSource === "simulated" && Math.abs(d.getTime() - entry.ommEpochMs) > maxAgeMs) {
+        const phaseMs =
+          (((d.getTime() - entry.ommEpochMs) % periodMs) + periodMs) % periodMs;
+        return new Date(entry.ommEpochMs + phaseMs);
+      }
+      return d;
+    };
+
+    // Preserve continuous time offset relative to fixedGmstDate so ring sweeps never hit a modulo wrap V-spike
+    let effectiveDate: Date;
+    let effectiveGmstDate: Date;
+    if (fixedGmstDate) {
+      effectiveGmstDate = mapDateNearEpoch(fixedGmstDate);
+      const deltaMs = sampleDate.getTime() - fixedGmstDate.getTime();
+      effectiveDate = new Date(effectiveGmstDate.getTime() + deltaMs);
+    } else {
+      effectiveDate = mapDateNearEpoch(sampleDate);
+      effectiveGmstDate = effectiveDate;
     }
 
     let pv = propagate(entry.satrec, effectiveDate);
     if (!pv || !Number.isFinite(pv.position.x)) {
-      const periodMs = Math.max(60_000, entry.periodMin * 60_000);
       const phaseMs =
         (((sampleDate.getTime() - entry.ommEpochMs) % periodMs) + periodMs) % periodMs;
       effectiveDate = new Date(entry.ommEpochMs + phaseMs);
@@ -649,12 +659,7 @@ export function propagateSatelliteGeodetic(
       }
     }
 
-    const gmstRef = fixedGmstDate ?? sampleDate;
-    const gmst = gstime(
-      entry.dataSource === "simulated" && Math.abs(gmstRef.getTime() - entry.ommEpochMs) > maxAgeMs
-        ? effectiveDate
-        : gmstRef
-    );
+    const gmst = gstime(effectiveGmstDate);
     const geo = eciToGeodetic(pv.position, gmst);
     const latDeg = degreesLat(geo.latitude);
     const lonDeg = normalizeLonDeg(degreesLong(geo.longitude));
@@ -811,7 +816,7 @@ export function sampleOrbitalPathPlanetCentered(
   let lastValidY = simRadiusM + 400_000;
   let lastValidZ = 0;
 
-  for (let i = 0; i <= segments; i++) {
+  for (let i = 0; i < segments; i++) {
     const frac = i / segments;
     const t = new Date(simDate.getTime() + frac * periodMs);
     const pt = propagateSatelliteGeodetic(entry, t, simDate);
@@ -827,6 +832,10 @@ export function sampleOrbitalPathPlanetCentered(
     out[i * 3 + 1] = lastValidY;
     out[i * 3 + 2] = lastValidZ;
   }
+  // Close orbital ring seamlessly onto vertex 0 (zero chord discontinuity)
+  out[segments * 3] = out[0];
+  out[segments * 3 + 1] = out[1];
+  out[segments * 3 + 2] = out[2];
   return out;
 }
 

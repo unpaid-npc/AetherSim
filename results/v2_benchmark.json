@@ -1,6 +1,6 @@
 {
   "version": "2.0.0",
-  "generatedAtIso": "2026-11-26T06:03:20.120Z",
+  "generatedAtIso": "2026-11-26T07:15:50.300Z",
   "seedStart": 42,
   "episodesPerCondition": 20,
   "ppoProtocol": {
@@ -71,7 +71,7 @@
         "meanTouchdownVy": null,
         "meanPadOffsetM": null,
         "meanFuelRemainingPct": 65.21246898477467,
-        "durationMs": 180
+        "durationMs": 255
       }
     },
     {
@@ -80,7 +80,7 @@
       "policy": "ppo_scratch",
       "protocol": "Pure PPO (16x512 = 8192 steps, lr=8e-4)",
       "trainSteps": 8192,
-      "trainWallMs": 2857,
+      "trainWallMs": 3390,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "mars",
@@ -101,7 +101,7 @@
         "meanTouchdownVy": null,
         "meanPadOffsetM": null,
         "meanFuelRemainingPct": 66.55970891319228,
-        "durationMs": 121
+        "durationMs": 122
       }
     },
     {
@@ -110,7 +110,7 @@
       "policy": "ppo_trained",
       "protocol": "Warm-Start (12 ep, 10 epochs) + PPO (16x512 steps, lr=3e-4)",
       "trainSteps": 8192,
-      "trainWallMs": 9143,
+      "trainWallMs": 8947,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "mars",
@@ -131,7 +131,7 @@
         "meanTouchdownVy": 4.084388287690484,
         "meanPadOffsetM": 1.3168445149974333,
         "meanFuelRemainingPct": 68.82971560898419,
-        "durationMs": 151
+        "durationMs": 154
       }
     },
     {
@@ -161,7 +161,7 @@
         "meanTouchdownVy": 1.3999750477155815,
         "meanPadOffsetM": 0.07909904279315041,
         "meanFuelRemainingPct": 67.33838344674409,
-        "durationMs": 76
+        "durationMs": 51
       }
     },
     {
@@ -170,7 +170,7 @@
       "policy": "ppo_trained",
       "protocol": "Fault stress (15% thrust loss, 15 m/s wind)",
       "trainSteps": 8192,
-      "trainWallMs": 9143,
+      "trainWallMs": 8947,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "mars",
@@ -191,7 +191,7 @@
         "meanTouchdownVy": 7.786089657376246,
         "meanPadOffsetM": 2.8579750295928474,
         "meanFuelRemainingPct": 69.07450810100013,
-        "durationMs": 159
+        "durationMs": 175
       }
     },
     {
@@ -221,7 +221,7 @@
         "meanTouchdownVy": 1.6051630520708873,
         "meanPadOffsetM": 0.1898714719404079,
         "meanFuelRemainingPct": 66.87393600272023,
-        "durationMs": 49
+        "durationMs": 68
       }
     },
     {
@@ -251,7 +251,7 @@
         "meanTouchdownVy": null,
         "meanPadOffsetM": null,
         "meanFuelRemainingPct": 59.725700983209734,
-        "durationMs": 234
+        "durationMs": 255
       }
     },
     {
@@ -260,7 +260,7 @@
       "policy": "ppo_scratch",
       "protocol": "Pure PPO (16x512 = 8192 steps, lr=8e-4)",
       "trainSteps": 8192,
-      "trainWallMs": 2810,
+      "trainWallMs": 3415,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "earth",
@@ -281,7 +281,7 @@
         "meanTouchdownVy": null,
         "meanPadOffsetM": null,
         "meanFuelRemainingPct": 52.991663976034204,
-        "durationMs": 321
+        "durationMs": 487
       }
     },
     {
@@ -290,7 +290,7 @@
       "policy": "ppo_trained",
       "protocol": "Warm-Start (12 ep, 10 epochs) + PPO (16x512 steps, lr=3e-4)",
       "trainSteps": 8192,
-      "trainWallMs": 7790,
+      "trainWallMs": 9335,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "earth",
@@ -311,7 +311,7 @@
         "meanTouchdownVy": 2.4775306388545055,
         "meanPadOffsetM": 0.8902833933911903,
         "meanFuelRemainingPct": 62.81902280995776,
-        "durationMs": 181
+        "durationMs": 205
       }
     },
     {
@@ -341,7 +341,7 @@
         "meanTouchdownVy": 1.3985021384738785,
         "meanPadOffsetM": 0.00043708245532164696,
         "meanFuelRemainingPct": 61.18094907878002,
-        "durationMs": 43
+        "durationMs": 54
       }
     },
     {
@@ -350,7 +350,7 @@
       "policy": "ppo_trained",
       "protocol": "Fault stress (15% thrust loss, 15 m/s wind)",
       "trainSteps": 8192,
-      "trainWallMs": 7790,
+      "trainWallMs": 9335,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "earth",
@@ -371,7 +371,7 @@
         "meanTouchdownVy": 8.917097370917087,
         "meanPadOffsetM": 8.685193185397093,
         "meanFuelRemainingPct": 65.38956193618455,
-        "durationMs": 122
+        "durationMs": 137
       }
     },
     {
@@ -401,7 +401,7 @@
         "meanTouchdownVy": 1.9315385976541855,
         "meanPadOffsetM": 11.230197373493207,
         "meanFuelRemainingPct": 60.94336702884955,
-        "durationMs": 42
+        "durationMs": 54
       }
     },
     {
@@ -431,7 +431,7 @@
         "meanTouchdownVy": null,
         "meanPadOffsetM": null,
         "meanFuelRemainingPct": 65.93098888327826,
-        "durationMs": 106
+        "durationMs": 152
       }
     },
     {
@@ -440,7 +440,7 @@
       "policy": "ppo_scratch",
       "protocol": "Pure PPO (16x512 = 8192 steps, lr=8e-4)",
       "trainSteps": 8192,
-      "trainWallMs": 2695,
+      "trainWallMs": 3116,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "moon",
@@ -461,7 +461,7 @@
         "meanTouchdownVy": null,
         "meanPadOffsetM": null,
         "meanFuelRemainingPct": 68.15944590977998,
-        "durationMs": 99
+        "durationMs": 105
       }
     },
     {
@@ -470,7 +470,7 @@
       "policy": "ppo_trained",
       "protocol": "Warm-Start (12 ep, 10 epochs) + PPO (16x512 steps, lr=3e-4)",
       "trainSteps": 8192,
-      "trainWallMs": 7275,
+      "trainWallMs": 8681,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "moon",
@@ -491,7 +491,7 @@
         "meanTouchdownVy": 1.333619125178156,
         "meanPadOffsetM": 4.021364378607809,
         "meanFuelRemainingPct": 70.05648392266531,
-        "durationMs": 162
+        "durationMs": 227
       }
     },
     {
@@ -521,7 +521,7 @@
         "meanTouchdownVy": 1.4000000000005504,
         "meanPadOffsetM": 3.0480983537414654,
         "meanFuelRemainingPct": 69.56960177133061,
-        "durationMs": 42
+        "durationMs": 58
       }
     },
     {
@@ -530,7 +530,7 @@
       "policy": "ppo_trained",
       "protocol": "Fault stress (15% thrust loss, 0 m/s wind)",
       "trainSteps": 8192,
-      "trainWallMs": 7275,
+      "trainWallMs": 8681,
       "evalSummary": {
         "pilot": "ai_ppo",
         "planet": "moon",
@@ -551,7 +551,7 @@
         "meanTouchdownVy": 1.811879731851607,
         "meanPadOffsetM": 4.828177049013192,
         "meanFuelRemainingPct": 69.96677162517356,
-        "durationMs": 146
+        "durationMs": 241
       }
     },
     {
@@ -581,9 +581,9 @@
         "meanTouchdownVy": 1.4896139709997933,
         "meanPadOffsetM": 4.852373421405834,
         "meanFuelRemainingPct": 69.18780310187421,
-        "durationMs": 44
+        "durationMs": 54
       }
     }
   ],
-  "totalWallMs": 34867
+  "totalWallMs": 39762
 }

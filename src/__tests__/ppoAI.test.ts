@@ -255,4 +255,33 @@ describe("Milestone 2 — Continuous PPO Neural Network AI Engine", () => {
     applyRLSpawnToController(ctrl, "moon", "landing", false, new SeededPRNG(9));
     expect(ctrl.getTelemetry().padDeckY).toBeCloseTo(1.6, 5);
   }, 15_000);
+
+  it("stage 6e polish: Earth LAUNCH warm-start achieves >= 80% deterministic launch success on 1:1 physics", () => {
+    const trainer = new PPOTrainer(
+      { planetId: "earth", missionMode: "launch", randomizeSpawn: true },
+      { learningRate: 6e-4, rolloutSteps: 512, epochs: 6, miniBatchSize: 64 },
+      42
+    );
+
+    const warmRes = trainer.warmStartWithSummary(12, 14);
+    expect(warmRes.bestBrain.hasTrainedWeights).toBe(true);
+    expect(warmRes.bestBrain.brainLevel).toBe("pre_trained");
+    expect(warmRes.evalSummary.successRatePct).toBeGreaterThanOrEqual(80);
+    expect(warmRes.evalSummary.crashRatePct).toBeLessThanOrEqual(20);
+    expect(warmRes.bestBrain.evalSuccessRatePct).toBeGreaterThanOrEqual(80);
+
+    // Independently verify exported checkpoint achieves >= 80% deterministic Earth launch success
+    const verifier = new PPOTrainer(
+      { planetId: "earth", missionMode: "launch", randomizeSpawn: true },
+      { rolloutSteps: 512 },
+      42
+    );
+    verifier.loadCheckpoint(trainer.exportBestCheckpoint(), trainer.getBestBrain());
+    const verifyEval = verifier.evaluateBatch(5, true, 9001);
+    console.info(
+      `[Stage 6E Earth LAUNCH Warm-Start] success=${verifyEval.successRatePct.toFixed(0)}% crash=${verifyEval.crashRatePct.toFixed(0)}% meanRet=${verifyEval.meanReturn.toFixed(1)}`
+    );
+    expect(verifyEval.successRatePct).toBeGreaterThanOrEqual(80);
+    expect(verifyEval.crashRatePct).toBeLessThanOrEqual(20);
+  }, 15_000);
 });

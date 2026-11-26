@@ -1,5 +1,11 @@
+import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { PLANET_ORDER, type PlanetId, getPlanetConfig } from "../config/planets";
+import {
+  EARTH_SATELLITE_DEFINITIONS,
+  createRuntimeSatelliteEntry,
+  sampleOrbitalPathPlanetCentered,
+} from "../orbital/SatelliteCatalog";
 import { type BoosterStatus, FlightController } from "../sim/FlightController";
 import {
   computeGravitationalParameter,
@@ -194,5 +200,71 @@ describe("True 1:1 Orbital Mechanics, 18% Staging & Autonomous Booster RTLS", ()
     ctrl.reset("moon", 1.6, "launch");
     expect(ctrl.getTimeWarp()).toBe(1);
     expect(ctrl.getTelemetry().orbital.timeWarp).toBe(1);
+  });
+
+  it("produces smooth contiguous segments (< 1,200 km jump, zero V-spike) on closed 200 km Earth orbits & SGP4 rings and triggers Max-Q below 35 km", () => {
+    const earth = getPlanetConfig("earth");
+    const R = earth.scale.simRadiusM;
+    const g0 = earth.physics.gravityMps2;
+    const mu = computeGravitationalParameter(g0, R);
+    const vCirc = Math.sqrt(mu / (R + 200_000));
+
+    // 1. Closed 200 km Earth Keplerian orbit continuity (zero chord/V-spike)
+    const pts = sampleOrbitPoints({ x: 0, y: 200_000, z: 0 }, { x: vCirc, y: 0, z: 0 }, R, mu, 198);
+    expect(pts.length).toBe(199);
+    let maxJumpM = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      expect(Number.isFinite(pts[i].x)).toBe(true);
+      expect(Number.isFinite(pts[i].y)).toBe(true);
+      expect(Number.isFinite(pts[i].z)).toBe(true);
+      const jump = Math.hypot(
+        pts[i + 1].x - pts[i].x,
+        pts[i + 1].y - pts[i].y,
+        pts[i + 1].z - pts[i].z
+      );
+      if (jump > maxJumpM) maxJumpM = jump;
+    }
+    expect(maxJumpM).toBeLessThan(1_200_000);
+    const loopGap = Math.hypot(
+      pts[pts.length - 1].x - pts[0].x,
+      pts[pts.length - 1].y - pts[0].y,
+      pts[pts.length - 1].z - pts[0].z
+    );
+    expect(loopGap).toBeLessThan(1.0);
+
+    // 2. Simulated SGP4 orbital ring continuity even >200 days away from fallback epoch (no GMST wrap spike)
+    const issDef = EARTH_SATELLITE_DEFINITIONS.find((d) => d.id === "iss")!;
+    const issEntry = createRuntimeSatelliteEntry(issDef, undefined, "simulated", "2026-04-01T12:00:00Z");
+    const farDate = new Date("2026-04-15T18:30:00.000Z");
+    const ring = sampleOrbitalPathPlanetCentered(issEntry, farDate, R, new THREE.Quaternion(), 144);
+    let maxSgp4JumpM = 0;
+    const nVerts = ring.length / 3;
+    for (let i = 0; i < nVerts - 1; i++) {
+      const jump = Math.hypot(
+        ring[(i + 1) * 3] - ring[i * 3],
+        ring[(i + 1) * 3 + 1] - ring[i * 3 + 1],
+        ring[(i + 1) * 3 + 2] - ring[i * 3 + 2]
+      );
+      if (jump > maxSgp4JumpM) maxSgp4JumpM = jump;
+    }
+    expect(maxSgp4JumpM).toBeLessThan(1_200_000);
+
+    // 3. Accurate Max-Q trigger timing during 1:1 Earth launch (strictly in atmosphere < 35 km, peak > 8 kPa)
+    const ctrl = new FlightController("earth", 18.0, "launch");
+    ctrl.startMission();
+    let maxQAltM: number | null = null;
+    let peakQPa = 0;
+    for (let i = 0; i < 60 * 140; i++) {
+      const tel = ctrl.update(1 / 60);
+      if (tel.maxQReached && maxQAltM === null) {
+        maxQAltM = tel.altitudeM;
+        peakQPa = tel.maxQPa;
+        break;
+      }
+    }
+    expect(maxQAltM).not.toBeNull();
+    expect(maxQAltM!).toBeGreaterThan(2_000);
+    expect(maxQAltM!).toBeLessThan(35_000);
+    expect(peakQPa).toBeGreaterThan(8_000);
   });
 });

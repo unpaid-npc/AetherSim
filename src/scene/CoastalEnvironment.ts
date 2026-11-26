@@ -814,7 +814,7 @@ export class CoastalEnvironment {
       return;
     }
 
-    const coastalFade = 1 - smoothstep(4500, 12000, camAltM);
+    const coastalFade = 1 - smoothstep(3800, 9600, camAltM);
     if (coastalFade <= 0.004) {
       this.group.visible = false;
       return;

@@ -1584,7 +1584,7 @@ export class SceneManager {
       nextTel.phase === "COMPLETE" ||
       launchSuccess ||
       launchSidewaysFail;
-    const maxSteps = nextTel.missionMode === "landing" ? 700 : 500;
+    const maxSteps = 700;
     const timedOut = this.liveEpSteps >= maxSteps;
 
     if (terminalPhase || outOfBounds || timedOut) {
@@ -1722,7 +1722,7 @@ export class SceneManager {
     this.syncVisualsFromTelemetry(tel);
     this.syncFloatingOriginTransforms(tel, camAltM);
     this.atmosphereDome.update(0, this.camera.position, camAltM, atmoTopM);
-    this.planetGlobe.update(0, camAltM);
+    this.planetGlobe.update(0, camAltM, this.camera);
     this.earthTileOverlay.update(camAltM);
     this.terrainSystem.setVisibilityForCameraAltitude(camAltM, R);
     this.coastalEnvironment.update(0, this.elapsedSec, camAltM, tel);
@@ -2076,7 +2076,7 @@ export class SceneManager {
     }
 
     this.atmosphereDome.update(dt, this.camera.position, camAltM, atmoTopM);
-    this.planetGlobe.update(dt, camAltM);
+    this.planetGlobe.update(dt, camAltM, this.camera);
     this.earthTileOverlay.update(camAltM);
     this.terrainSystem.setVisibilityForCameraAltitude(camAltM, R);
     this.coastalEnvironment.update(dt, this.elapsedSec, camAltM, tel);

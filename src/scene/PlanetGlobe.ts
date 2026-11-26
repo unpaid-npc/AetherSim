@@ -33,6 +33,116 @@ function getIcosaDetail(quality: QualityPreset, isSurface: boolean): number {
   return 40;
 }
 
+interface SitePinSpriteEntry {
+  readonly siteId: LaunchSiteId;
+  readonly shortName: string;
+  readonly sprite: THREE.Sprite;
+  readonly texture: THREE.CanvasTexture;
+  readonly material: THREE.SpriteMaterial;
+  readonly canvas: HTMLCanvasElement;
+  readonly ctx: CanvasRenderingContext2D;
+  readonly unitDir: THREE.Vector3;
+  isActive: boolean;
+}
+
+function drawSitePinCanvas(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  shortName: string,
+  active: boolean
+): void {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const accent = active ? "#fbbf24" : "#38bdf8";
+  const glow = active ? "rgba(251, 191, 36, 0.38)" : "rgba(56, 189, 248, 0.30)";
+
+  // Subtle glowing 10–12 px circular pin dot on the left
+  const cx = 18;
+  const cy = canvas.height * 0.5;
+  ctx.save();
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, active ? 13 : 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#060c18";
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2.6;
+  ctx.beginPath();
+  ctx.arc(cx, cy, active ? 6.5 : 5.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = accent;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3.0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Compact crisp site tag pill
+  ctx.font = "700 16px Consolas, 'Cascadia Mono', monospace";
+  const textW = Math.min(138, Math.ceil(ctx.measureText(shortName).width));
+  const pillX = 34;
+  const pillY = 9;
+  const pillW = textW + 14;
+  const pillH = 26;
+
+  ctx.fillStyle = "rgba(6, 12, 24, 0.80)";
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.roundRect(pillX, pillY, pillW, pillH, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = active ? "#fef3c7" : "#e2e8f0";
+  ctx.textBaseline = "middle";
+  ctx.fillText(shortName, pillX + 7, cy + 0.5, 138);
+  ctx.restore();
+}
+
+function createSitePinSprite(
+  siteId: LaunchSiteId,
+  shortName: string,
+  unitDir: THREE.Vector3,
+  active: boolean
+): SitePinSpriteEntry {
+  const canvas = document.createElement("canvas");
+  canvas.width = 192;
+  canvas.height = 44;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Unable to acquire 2D canvas context for spaceport pin sprite");
+  }
+  drawSitePinCanvas(canvas, ctx, shortName, active);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0.92,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.center.set(0.095, 0.5);
+  sprite.renderOrder = 8;
+
+  return {
+    siteId,
+    shortName,
+    sprite,
+    texture,
+    material,
+    canvas,
+    ctx,
+    unitDir,
+    isActive: active,
+  };
+}
+
 /**
  * Manages the full 3D curved planetary globe centered at (0, -simRadiusM, 0),
  * rotated so `launchSiteCoords` sits directly at zenith (0, 0, 0), using zero-pinch
@@ -58,10 +168,12 @@ export class PlanetGlobe {
   private limbMesh: THREE.Mesh | null = null;
 
   private readonly sitePinsGroup = new THREE.Group();
-  private sitePinGeo: THREE.SphereGeometry | null = null;
-  private sitePinMat: THREE.MeshBasicMaterial | null = null;
-  private sitePinsInst: THREE.InstancedMesh | null = null;
+  private sitePinSprites: SitePinSpriteEntry[] = [];
   private activeSiteId: LaunchSiteId = "starbase";
+  private readonly scratchPinWorld = new THREE.Vector3();
+  private readonly scratchCenterWorld = new THREE.Vector3();
+  private readonly scratchPinRadial = new THREE.Vector3();
+  private readonly scratchCamRadial = new THREE.Vector3();
 
   private placeholderTextures: PlanetGlobeTextureSet | null = null;
   private activeConfig: PlanetConfig;
@@ -201,54 +313,37 @@ export class PlanetGlobe {
     this.rebuildSitePins(R);
   }
 
-  private rebuildSitePins(R: number): void {
-    if (this.sitePinsInst) {
-      this.sitePinsGroup.remove(this.sitePinsInst);
-      this.sitePinsInst.dispose();
-      this.sitePinsInst = null;
+  private clearSitePins(): void {
+    for (const pin of this.sitePinSprites) {
+      this.sitePinsGroup.remove(pin.sprite);
+      pin.texture.dispose();
+      pin.material.dispose();
     }
-    this.sitePinGeo?.dispose();
-    this.sitePinMat?.dispose();
-    this.sitePinGeo = null;
-    this.sitePinMat = null;
+    this.sitePinSprites = [];
+  }
+
+  private rebuildSitePins(R: number): void {
+    this.clearSitePins();
 
     if (this.activeConfig.id !== "earth") {
       this.sitePinsGroup.visible = false;
       return;
     }
 
-    const pinRadius = Math.max(24_000, R * 0.0085);
-    this.sitePinGeo = new THREE.SphereGeometry(pinRadius, 12, 8);
-    this.sitePinMat = new THREE.MeshBasicMaterial({
-      color: "#ffffff",
-      transparent: true,
-      opacity: 0.92,
-      depthWrite: false,
-    });
-    this.sitePinsInst = new THREE.InstancedMesh(
-      this.sitePinGeo,
-      this.sitePinMat,
-      EARTH_LAUNCH_SITES.length
-    );
-    this.sitePinsInst.renderOrder = 6;
-    const dummy = new THREE.Object3D();
-    const activeCol = new THREE.Color("#fbbf24");
-    const otherCol = new THREE.Color("#38bdf8");
-    const pinAltR = R + 18_000;
-
-    EARTH_LAUNCH_SITES.forEach((s, i) => {
+    const pinAltR = R + 6_000;
+    for (const s of EARTH_LAUNCH_SITES) {
       const [ux, uy, uz] = geoToSphereUnitVector(s.latDeg, s.lonDeg);
-      dummy.position.set(ux * pinAltR, uy * pinAltR, uz * pinAltR);
-      dummy.scale.setScalar(s.id === this.activeSiteId ? 1.45 : 0.9);
-      dummy.updateMatrix();
-      this.sitePinsInst!.setMatrixAt(i, dummy.matrix);
-      this.sitePinsInst!.setColorAt(i, s.id === this.activeSiteId ? activeCol : otherCol);
-    });
-    this.sitePinsInst.instanceMatrix.needsUpdate = true;
-    if (this.sitePinsInst.instanceColor) {
-      this.sitePinsInst.instanceColor.needsUpdate = true;
+      const unitDir = new THREE.Vector3(ux, uy, uz).normalize();
+      const entry = createSitePinSprite(
+        s.id,
+        s.shortName,
+        unitDir,
+        s.id === this.activeSiteId
+      );
+      entry.sprite.position.set(ux * pinAltR, uy * pinAltR, uz * pinAltR);
+      this.sitePinsGroup.add(entry.sprite);
+      this.sitePinSprites.push(entry);
     }
-    this.sitePinsGroup.add(this.sitePinsInst);
     this.sitePinsGroup.visible = false;
   }
 
@@ -257,22 +352,14 @@ export class PlanetGlobe {
     const q = computeLaunchSiteZenithQuaternion(latDeg, lonDeg);
     this.zenithAlignedGroup.quaternion.copy(q);
 
-    if (this.sitePinsInst && this.activeConfig.id === "earth") {
-      const dummy = new THREE.Object3D();
-      const activeCol = new THREE.Color("#fbbf24");
-      const otherCol = new THREE.Color("#38bdf8");
-      const pinAltR = this.activeConfig.scale.simRadiusM + 18_000;
-      EARTH_LAUNCH_SITES.forEach((s, i) => {
-        const [ux, uy, uz] = geoToSphereUnitVector(s.latDeg, s.lonDeg);
-        dummy.position.set(ux * pinAltR, uy * pinAltR, uz * pinAltR);
-        dummy.scale.setScalar(s.id === siteId ? 1.45 : 0.9);
-        dummy.updateMatrix();
-        this.sitePinsInst!.setMatrixAt(i, dummy.matrix);
-        this.sitePinsInst!.setColorAt(i, s.id === siteId ? activeCol : otherCol);
-      });
-      this.sitePinsInst.instanceMatrix.needsUpdate = true;
-      if (this.sitePinsInst.instanceColor) {
-        this.sitePinsInst.instanceColor.needsUpdate = true;
+    if (this.activeConfig.id === "earth") {
+      for (const pin of this.sitePinSprites) {
+        const nextActive = pin.siteId === siteId;
+        if (pin.isActive !== nextActive) {
+          pin.isActive = nextActive;
+          drawSitePinCanvas(pin.canvas, pin.ctx, pin.shortName, nextActive);
+          pin.texture.needsUpdate = true;
+        }
       }
     }
   }
@@ -298,13 +385,41 @@ export class PlanetGlobe {
     );
   }
 
-  update(dt: number, cameraAltitudeM: number): void {
+  update(dt: number, cameraAltitudeM: number, camera?: THREE.PerspectiveCamera): void {
     this.surfaceMat.uniforms.uCameraAltitude.value = cameraAltitudeM;
 
     if (this.activeConfig.id === "earth") {
       const nightT = Math.max(0, Math.min(1, (cameraAltitudeM - 15000) / 55000));
       this.surfaceMat.uniforms.uNightOpacity.value = nightT * 0.95;
-      this.sitePinsGroup.visible = cameraAltitudeM > 80_000;
+
+      // Subtle screen-space spaceport pins strictly hidden below 450 km camera altitude
+      const showPins = cameraAltitudeM >= 450_000 && this.sitePinSprites.length > 0;
+      this.sitePinsGroup.visible = showPins;
+      if (showPins && camera) {
+        const vFovScale = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+        this.scratchCenterWorld.copy(this.globeCenterGroup.position);
+        this.scratchCamRadial.copy(camera.position).sub(this.scratchCenterWorld).normalize();
+        const pinAltR = this.activeConfig.scale.simRadiusM + 6_000;
+
+        for (const pin of this.sitePinSprites) {
+          this.scratchPinRadial
+            .copy(pin.unitDir)
+            .applyQuaternion(this.zenithAlignedGroup.quaternion);
+          const facingCamera = this.scratchPinRadial.dot(this.scratchCamRadial) > 0.08;
+          pin.sprite.visible = facingCamera;
+          if (!facingCamera) {
+            continue;
+          }
+          this.scratchPinWorld
+            .copy(this.scratchCenterWorld)
+            .addScaledVector(this.scratchPinRadial, pinAltR);
+          const dist = Math.max(1000, camera.position.distanceTo(this.scratchPinWorld));
+          // Strictly capped <= 0.014 * dist * tan(fov/2) height (crisp ~10-12 px dot + tag)
+          const h = dist * vFovScale * (pin.isActive ? 0.0135 : 0.0115);
+          pin.sprite.scale.set(h * (192 / 44), h, 1);
+          pin.material.opacity = pin.isActive ? 0.96 : 0.78;
+        }
+      }
     } else {
       this.sitePinsGroup.visible = false;
     }
@@ -347,15 +462,7 @@ export class PlanetGlobe {
 
   dispose(): void {
     this.clearGeometries();
-    if (this.sitePinsInst) {
-      this.sitePinsGroup.remove(this.sitePinsInst);
-      this.sitePinsInst.dispose();
-      this.sitePinsInst = null;
-    }
-    this.sitePinGeo?.dispose();
-    this.sitePinMat?.dispose();
-    this.sitePinGeo = null;
-    this.sitePinMat = null;
+    this.clearSitePins();
     disposeGlobeTextureSet(this.placeholderTextures);
     this.placeholderTextures = null;
     this.surfaceMat.dispose();
