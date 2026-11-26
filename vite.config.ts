@@ -9,8 +9,8 @@ function cspMetaPlugin(): Plugin {
     },
     transformIndexHtml(html) {
       const policy = isServe
-        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' blob: http://127.0.0.1:5173; worker-src 'self' blob: http://127.0.0.1:5173; style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 blob: data: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov https://celestrak.org;"
-        : "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov https://celestrak.org;";
+        ? "default-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob: http://127.0.0.1:5173; worker-src 'self' blob: http://127.0.0.1:5173; style-src 'self' 'unsafe-inline' http://127.0.0.1:5173; img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:5173 ws://127.0.0.1:5173 blob: data: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov https://celestrak.org;"
+        : "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' blob: data: https://tiles.maps.eox.at https://gibs.earthdata.nasa.gov https://celestrak.org;";
 
       return html.replace(
         "<head>",

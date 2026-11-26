@@ -936,10 +936,119 @@ input:focus-visible,
 }
 
 .gpu-label {
-  max-width: 220px;
+  max-width: 210px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.gpu-tier-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs, 4px);
+  border: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+}
+
+.gpu-tier-badge.tier-dgpu {
+  color: #a7f3d0;
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(52, 211, 153, 0.55);
+}
+
+.gpu-tier-badge.tier-igpu {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.gpu-tier-badge.tier-software {
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(248, 113, 113, 0.55);
+}
+
+.gpu-tier-badge.tier-unknown {
+  color: var(--text-secondary);
+  background: var(--surface-elevated);
+}
+
+.hw-panel {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hw-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hw-title {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.hw-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hw-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.hw-key {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.hw-val {
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 205px;
+}
+
+.hw-gpu-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.hw-gpu-name {
+  max-width: 155px;
+}
+
+.hw-warning {
+  padding: 6px 8px;
+  border-radius: var(--radius-xs, 5px);
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fde68a;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.4;
 }
 
 /* ==========================================================================

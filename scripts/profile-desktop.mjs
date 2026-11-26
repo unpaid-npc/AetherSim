@@ -51,15 +51,29 @@ if (exitCode !== 0 || iStart === -1 || iEnd === -1) {
 
 const parsed = JSON.parse(fullStdout.slice(iStart + startMarker.length, iEnd).trim());
 const cpus = os.cpus();
+const firstSample = parsed.samples[0] ?? {};
+const sysHw = parsed.systemHardware ?? null;
+const cpuModel = firstSample.cpuModel || (cpus.length > 0 ? cpus[0].model.trim() : "Unknown CPU");
+const cpuCores = firstSample.cpuCores || cpus.length;
+const gpuShortName = firstSample.gpuShortName || firstSample.rendererName || "Unknown WebGL Renderer";
+const gpuTier = firstSample.gpuTier || "unknown";
+const isHybridOnIgpu = Boolean(firstSample.isHybridOnIgpu);
+
 const hostInfo = {
   platform: `${os.type()} ${os.release()} (${os.arch()})`,
-  cpuModel: cpus.length > 0 ? cpus[0].model.trim() : "Unknown CPU",
-  logicalCores: cpus.length,
-  totalRamGB: Number((os.totalmem() / (1024 * 1024 * 1024)).toFixed(1)),
+  cpuModel,
+  cpuCores,
+  logicalCores: cpuCores,
+  totalRamGB: sysHw?.totalRamGb ?? Number((os.totalmem() / (1024 * 1024 * 1024)).toFixed(1)),
   nodeVersion: process.version,
   electronVersion: process.versions.electron ?? "45.4.1",
-  gpuRenderer: parsed.samples[0]?.rendererName ?? "Unknown WebGL Renderer",
-  resolution: `${parsed.samples[0]?.canvasWidth ?? 0}x${parsed.samples[0]?.canvasHeight ?? 0}`,
+  gpuRenderer: firstSample.rendererName ?? "Unknown WebGL Renderer",
+  gpuShortName,
+  gpuTier,
+  isHybridOnIgpu,
+  glbLoadedCount: firstSample.glbLoadedCount ?? 0,
+  estimatedVramMB: firstSample.estimatedVramMB ?? 0,
+  resolution: `${firstSample.canvasWidth ?? 0}x${firstSample.canvasHeight ?? 0}`,
 };
 
 const output = {
@@ -67,6 +81,7 @@ const output = {
   generatedAtIso: new Date().toISOString(),
   profileStatus: parsed.profileStatus,
   host: hostInfo,
+  systemHardware: sysHw,
   samples: parsed.samples,
   warnings: parsed.warnings,
   errors: parsed.errors,
@@ -84,13 +99,21 @@ fs.writeFileSync(
 );
 
 const tableHeader =
-  "| Planet | Quality | Avg FPS | p50 Frame (ms) | p95 Frame (ms) | Draw Calls | Triangles | JS Heap (MB) |\n" +
-  "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |";
+  "| Planet | Quality | Avg FPS | p50 Frame (ms) | p95 Frame (ms) | Draw Calls | Triangles | Shadows | JS Heap (MB) |\n" +
+  "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |";
 
 const tableRows = output.samples.map((s) => {
   const heapStr = s.jsHeapUsedMB !== null ? `${s.jsHeapUsedMB.toFixed(1)} MB` : "N/A";
-  return `| **${s.planet.toUpperCase()}** | \`${s.quality.toUpperCase()}\` | **${s.avgFps.toFixed(1)}** | ${s.p50FrameMs.toFixed(2)} ms | ${s.p95FrameMs.toFixed(2)} ms | ${s.drawCalls} | ${s.triangles.toLocaleString("en-US")} | ${heapStr} |`;
+  const csmStr = `${s.shadowCascades ?? 1}× CSM`;
+  return `| **${s.planet.toUpperCase()}** | \`${s.quality.toUpperCase()}\` | **${s.avgFps.toFixed(1)}** | ${s.p50FrameMs.toFixed(2)} ms | ${s.p95FrameMs.toFixed(2)} ms | ${s.drawCalls} | ${s.triangles.toLocaleString("en-US")} | ${csmStr} | ${heapStr} |`;
 });
+
+const gpuScopeNote =
+  gpuTier === "dgpu"
+    ? `Measured on discrete GPU (\`${gpuShortName}\`) with hardware-accelerated WebGL2 and Cascaded Shadow Maps (\`LOW\`: 1×, \`MED\`: 2×, \`HIGH\`: 3×).`
+    : isHybridOnIgpu
+      ? `Measured on integrated GPU (\`${gpuShortName}\`) on a hybrid-graphics laptop where a discrete GPU is also present. Set Windows Graphics Preference to **High Performance** for \`electron.exe\` to unlock discrete-GPU frame rates under \`MED\` / \`HIGH\`.`
+      : `Performance numbers below are specific to the \`${gpuShortName}\` (\`${gpuTier}\`) hardware above and are **not** claimed as universal across all GPUs.`;
 
 const reportMd = `# AetherSim v${appVersion} — Desktop GPU & FPS Performance Report
 
@@ -101,14 +124,16 @@ Measured directly inside the built Electron desktop application via \`npm run pr
 ## Test Environment & Hardware Scope
 - **Measured At (UTC):** \`${output.generatedAtIso}\`
 - **OS / Architecture:** \`${hostInfo.platform}\`
-- **CPU:** \`${hostInfo.cpuModel}\` (\`${hostInfo.logicalCores}\` logical cores)
+- **CPU:** \`${hostInfo.cpuModel}\` (\`${hostInfo.cpuCores}\` logical cores)
 - **System Memory:** \`${hostInfo.totalRamGB} GB\`
-- **WebGL GPU Renderer:** \`${hostInfo.gpuRenderer}\`
+- **Active GPU:** \`${hostInfo.gpuShortName}\` (\`tier: ${hostInfo.gpuTier}\`, \`hybridOnIgpu: ${hostInfo.isHybridOnIgpu}\`)
+- **Raw WebGL Renderer:** \`${hostInfo.gpuRenderer}\`
+- **Loaded Hero GLB Assets / VRAM Est.:** \`${hostInfo.glbLoadedCount}\` models / \`${hostInfo.estimatedVramMB} MB\`
 - **Viewport Resolution:** \`${hostInfo.resolution}\`
 - **Sampling Protocol:** \`3,000 ms\` live \`requestAnimationFrame\` delta sampling after \`600 ms\` planet/quality settle across all 9 \`(Planet × Quality)\` combinations.
 
 > [!NOTE]
-> Performance numbers below are specific to the integrated GPU hardware above and are **not** claimed as universal across all GPUs. Discrete GPUs (e.g., GTX 1650 / RTX-class) will exhibit proportionally lower frame times under \`MED\` / \`HIGH\` post-processing.
+> ${gpuScopeNote}
 
 ---
 
@@ -120,13 +145,15 @@ ${tableRows.join("\n")}
 ---
 
 ## Observations
-- **Quality Scaling:** \`LOW\` bypasses \`EffectComposer\` (\`UnrealBloomPass\` + \`SchlierenHeatShader\`) and drops shadow map resolution from \`2048×2048\` to \`1024×1024\`, delivering lower frame times on integrated GPUs.
+- **Quality & Shadow Scaling:** \`LOW\` uses a single \`1024×1024\` texel-snapped directional shadow map and bypasses \`EffectComposer\` bloom; \`MED\` enables 2-cascade CSM (\`2048\` + \`1024\`); \`HIGH\` enables full 3-cascade CSM (\`2048\` + \`2048\` + \`1024\`) up to \`6 km\`. All cascades auto-disable cleanly above \`15 km\` camera altitude.
 - **Console / WebGL Errors:** \`${output.errors.length}\` errors, \`${output.warnings.length}\` warnings.
 `;
 
 fs.writeFileSync(path.join(docsDir, "PERFORMANCE_REPORT.md"), reportMd);
 
-console.log(`Desktop profile saved (${output.profileStatus}). Host GPU: ${hostInfo.gpuRenderer}`);
+console.log(
+  `Desktop profile saved (${output.profileStatus}). CPU: ${hostInfo.cpuModel} (${hostInfo.cpuCores}T) | GPU: ${hostInfo.gpuShortName} [${hostInfo.gpuTier}] (hybridOnIgpu=${hostInfo.isHybridOnIgpu})`
+);
 console.table(
   output.samples.map((s) => ({
     planet: s.planet,

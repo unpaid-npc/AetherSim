@@ -1,5 +1,6 @@
 import { getVehicleConfig } from "../config/vehicles";
 import type { SceneTelemetry } from "../scene/SceneManager";
+import { parseGpuRenderer } from "../utils/hardwareInfo";
 import { el } from "./dom";
 import {
   formatAltitude,
@@ -104,7 +105,9 @@ export class FlightHud {
   private readonly fpsStrong: HTMLElement;
   private readonly drawStrong: HTMLElement;
   private readonly faultStrong: HTMLElement;
+  private readonly gpuPillEl: HTMLSpanElement;
   private readonly gpuStrong: HTMLElement;
+  private readonly gpuTierBadgeEl: HTMLSpanElement;
 
   constructor(isElectron: boolean, initialRendererName: string) {
     this.root = el("footer", "glass-panel flight-hud");
@@ -209,8 +212,18 @@ export class FlightHud {
     this.drawStrong = makePill("DRAWS", "--");
     this.faultStrong = makePill("FAULTS", "NOMINAL");
     makePill("MODE", isElectron ? "DESKTOP" : "BROWSER");
-    this.gpuStrong = makePill("GPU", initialRendererName, "gpu-label");
-    this.gpuStrong.title = initialRendererName;
+
+    const parsedInitGpu = parseGpuRenderer(initialRendererName);
+    this.gpuPillEl = el("span", "status-pill tabular gpu-pill");
+    this.gpuStrong = el("strong", "gpu-label", parsedInitGpu.shortName);
+    this.gpuTierBadgeEl = el(
+      "span",
+      `gpu-tier-badge tier-${parsedInitGpu.gpuTier}`,
+      `[${parsedInitGpu.tag}]`
+    );
+    this.gpuPillEl.append(document.createTextNode("GPU "), this.gpuStrong, this.gpuTierBadgeEl);
+    this.gpuPillEl.title = `Active GPU: ${initialRendererName}`;
+    sysRow.append(this.gpuPillEl);
 
     footerRow.append(this.orbitalRow, sysRow);
     this.root.append(mainRow, footerRow);
@@ -337,6 +350,14 @@ export class FlightHud {
     this.fpsStrong.textContent = String(t.fps);
     this.drawStrong.textContent = String(t.drawCalls);
     this.faultStrong.textContent = f.activeFaults;
-    this.gpuStrong.textContent = t.rendererName;
+
+    const hw = t.hardware;
+    this.gpuStrong.textContent = hw.gpuShortName;
+    this.gpuTierBadgeEl.textContent = `[${hw.gpuTag}]`;
+    this.gpuTierBadgeEl.className = `gpu-tier-badge tier-${hw.gpuTier}`;
+    this.gpuPillEl.title =
+      `Active GPU: ${hw.rawRenderer}\n` +
+      `Host CPU: ${hw.cpuModel}${hw.cpuCores > 0 ? ` (${hw.cpuCores}T)` : ""}\n` +
+      `Est. VRAM: ${hw.estimatedVramMB.toFixed(1)} MB · GLB Models: ${hw.glbLoadedCount} · Shadows: ${hw.shadowCascades}× CSM`;
   }
 }
