@@ -96,8 +96,9 @@ function buildRadialRingGeometry(
         ? outerRadius * Math.pow(t, 1.32)
         : innerRadius + (outerRadius - innerRadius) * Math.pow(t, 1.24);
 
-    // Gentle -32m outer rim tuck matching the globe's -140m recess so there is zero gap
-    const rimTuck = smoothstep(localR * 0.82, localR, radius) * 32;
+    // Gentle outer rim tuck matching the globe recess so there is zero gap without dark fold on Moon
+    const tuckDepth = config.id === "moon" ? 14 : 24;
+    const rimTuck = smoothstep(localR * 0.84, localR, radius) * tuckDepth;
 
     for (let aIdx = 0; aIdx < cols; aIdx++) {
       const theta = (aIdx / thetaSegments) * Math.PI * 2;
@@ -188,6 +189,14 @@ function buildRadialRingGeometry(
   geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
   geom.setIndex(indices);
   geom.computeVertexNormals();
+  // Eliminate degenerate zero-area pole normals at r=0 (prevents radial normal-map vortex at center)
+  if (innerRadius === 0) {
+    const nAttr = geom.getAttribute("normal") as THREE.BufferAttribute;
+    for (let aIdx = 0; aIdx < cols; aIdx++) {
+      nAttr.setXYZ(aIdx, 0, 1, 0);
+    }
+    nAttr.needsUpdate = true;
+  }
   geom.computeBoundingSphere();
   return geom;
 }
@@ -206,8 +215,10 @@ export class TerrainSystem {
     uSatelliteTint: { value: THREE.Color };
     uFeatherInner: { value: number };
     uFeatherOuter: { value: number };
+    uTintInner: { value: number };
     uSoilMap: { value: THREE.Texture | null };
     uHasEarthPbr: { value: number };
+    uIsEarth: { value: number };
   };
   private terrainTextures: PbrTextureSet | null = null;
   private earthPbrTextures: THREE.Texture[] = [];
@@ -235,10 +246,12 @@ export class TerrainSystem {
 
     this.outerUniforms = {
       uSatelliteTint: { value: getDefaultSiteTintColor(initialConfig.id) },
-      uFeatherInner: { value: 10000.0 },
-      uFeatherOuter: { value: initialConfig.scale.localTerrainRadiusM * 0.90 },
+      uFeatherInner: { value: initialConfig.scale.localTerrainRadiusM * 0.42 },
+      uFeatherOuter: { value: initialConfig.scale.localTerrainRadiusM * 0.95 },
+      uTintInner: { value: initialConfig.scale.localTerrainRadiusM * 0.28 },
       uSoilMap: { value: null },
       uHasEarthPbr: { value: 0.0 },
+      uIsEarth: { value: initialConfig.id === "earth" ? 1.0 : 0.0 },
     };
 
     const injectTerrainPbr = (
@@ -246,13 +259,15 @@ export class TerrainSystem {
       isOuterFeather: boolean
     ): void => {
       mat.customProgramCacheKey = () =>
-        isOuterFeather ? "aethersim-outer-terrain-pbr-v2" : "aethersim-inner-terrain-pbr-v2";
+        isOuterFeather ? "aethersim-outer-terrain-pbr-v3" : "aethersim-inner-terrain-pbr-v3";
       mat.onBeforeCompile = (shader) => {
         shader.uniforms.uSatelliteTint = this.outerUniforms.uSatelliteTint;
         shader.uniforms.uFeatherInner = this.outerUniforms.uFeatherInner;
         shader.uniforms.uFeatherOuter = this.outerUniforms.uFeatherOuter;
+        shader.uniforms.uTintInner = this.outerUniforms.uTintInner;
         shader.uniforms.uSoilMap = this.outerUniforms.uSoilMap;
         shader.uniforms.uHasEarthPbr = this.outerUniforms.uHasEarthPbr;
+        shader.uniforms.uIsEarth = this.outerUniforms.uIsEarth;
 
         shader.vertexShader = shader.vertexShader
           .replace(
@@ -264,33 +279,87 @@ export class TerrainSystem {
             "#include <begin_vertex>\nvRadialDist = length(transformed.xz);\nvLocalGroundXZ = transformed.xz;"
           );
 
+        const commonHeader = `#include <common>
+uniform vec3 uSatelliteTint;
+uniform float uFeatherInner;
+uniform float uFeatherOuter;
+uniform float uTintInner;
+uniform sampler2D uSoilMap;
+uniform float uHasEarthPbr;
+uniform float uIsEarth;
+varying float vRadialDist;
+varying vec2 vLocalGroundXZ;
+
+float aetherHash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+float aetherNoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = aetherHash21(i);
+  float b = aetherHash21(i + vec2(1.0, 0.0));
+  float c = aetherHash21(i + vec2(0.0, 1.0));
+  float d = aetherHash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float aetherFbm2(vec2 p) {
+  float v = 0.0;
+  v += 0.55 * aetherNoise2(p);
+  v += 0.30 * aetherNoise2(p * 2.13 + vec2(17.1, 31.7));
+  v += 0.15 * aetherNoise2(p * 4.41 + vec2(53.3, 11.9));
+  return v;
+}`;
+
+        // Dual-scale 37-degree rotated UV sampling eliminates checkerboard tiling on all planets
+        const mapReplacement = `#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+  mat2 aetherRot37 = mat2(0.7986355, -0.6018150, 0.6018150, 0.7986355);
+  vec2 aetherRotUv = aetherRot37 * (vMapUv * 0.23) + vec2(0.37, 0.71);
+  vec4 sampledRotColor = texture2D( map, aetherRotUv );
+  float aetherTileMacro = aetherFbm2(vLocalGroundXZ * 0.0026);
+  sampledDiffuseColor.rgb = mix(
+    sampledDiffuseColor.rgb,
+    sampledRotColor.rgb,
+    clamp(0.30 + 0.42 * aetherTileMacro, 0.0, 0.78)
+  );
+  diffuseColor *= sampledDiffuseColor;
+#endif`;
+
+        const earthSoilBlock = `
+          if (uHasEarthPbr > 0.5) {
+            mat2 soilRot37 = mat2(0.7986355, -0.6018150, 0.6018150, 0.7986355);
+            float macro = aetherFbm2(vLocalGroundXZ * 0.0022);
+            float beachMask = smoothstep(-75.0, 20.0, vLocalGroundXZ.x - 385.0);
+            vec3 soilNear = texture2D(uSoilMap, vLocalGroundXZ * 0.028).rgb;
+            vec3 soilFar = texture2D(uSoilMap, soilRot37 * (vLocalGroundXZ * 0.0064) + vec2(0.41, 0.19)).rgb;
+            vec3 soilCol = mix(soilNear, soilFar, clamp(0.32 + 0.45 * macro, 0.0, 0.80));
+            vec3 dualCol = mix(soilCol, diffuseColor.rgb, clamp(0.38 + 0.62 * beachMask, 0.0, 1.0));
+            diffuseColor.rgb = mix(diffuseColor.rgb, dualCol * (0.88 + macro * 0.24), 0.70);
+          }`;
+
         const fragSnippet = isOuterFeather
           ? `#include <color_fragment>
-          if (uHasEarthPbr > 0.5) {
-            float macro = texture2D(uSoilMap, vLocalGroundXZ * 0.0022).r;
-            float beachMask = smoothstep(-75.0, 20.0, vLocalGroundXZ.x - 385.0);
-            vec3 soilCol = texture2D(uSoilMap, vLocalGroundXZ * 0.032).rgb;
-            vec3 dualCol = mix(soilCol, diffuseColor.rgb, clamp(0.35 + 0.65 * beachMask, 0.0, 1.0));
-            diffuseColor.rgb = mix(diffuseColor.rgb, dualCol * (0.86 + macro * 0.28), 0.72);
-          }
-          float radialTintT = smoothstep(uFeatherInner, uFeatherOuter * 0.80, vRadialDist);
-          diffuseColor.rgb = mix(diffuseColor.rgb, uSatelliteTint, radialTintT * 0.88);
+          ${earthSoilBlock}
+          float radialTintT = smoothstep(uTintInner, uFeatherOuter * 0.84, vRadialDist);
+          float tintWeight = uIsEarth > 0.5 ? 0.88 : 0.94;
+          diffuseColor.rgb = mix(diffuseColor.rgb, uSatelliteTint, radialTintT * tintWeight);
           float radialAlpha = 1.0 - smoothstep(uFeatherInner, uFeatherOuter, vRadialDist);
           diffuseColor.a *= radialAlpha;`
           : `#include <color_fragment>
-          if (uHasEarthPbr > 0.5) {
-            float macro = texture2D(uSoilMap, vLocalGroundXZ * 0.0022).r;
-            float beachMask = smoothstep(-75.0, 20.0, vLocalGroundXZ.x - 385.0);
-            vec3 soilCol = texture2D(uSoilMap, vLocalGroundXZ * 0.032).rgb;
-            vec3 dualCol = mix(soilCol, diffuseColor.rgb, clamp(0.35 + 0.65 * beachMask, 0.0, 1.0));
-            diffuseColor.rgb = mix(diffuseColor.rgb, dualCol * (0.86 + macro * 0.28), 0.72);
+          ${earthSoilBlock}
+          if (uIsEarth < 0.5) {
+            float innerTintT = smoothstep(uTintInner, uFeatherOuter * 0.84, vRadialDist);
+            diffuseColor.rgb = mix(diffuseColor.rgb, uSatelliteTint, innerTintT * 0.94);
           }`;
 
         shader.fragmentShader = shader.fragmentShader
-          .replace(
-            "#include <common>",
-            "#include <common>\nuniform vec3 uSatelliteTint;\nuniform float uFeatherInner;\nuniform float uFeatherOuter;\nuniform sampler2D uSoilMap;\nuniform float uHasEarthPbr;\nvarying float vRadialDist;\nvarying vec2 vLocalGroundXZ;"
-          )
+          .replace("#include <common>", commonHeader)
+          .replace("#include <map_fragment>", mapReplacement)
           .replace("#include <color_fragment>", fragSnippet);
       };
     };
@@ -345,13 +414,24 @@ export class TerrainSystem {
 
   setVisibilityForCameraAltitude(camAltM: number, _simRadiusM: number): void {
     this.boulderMesh.visible = camAltM < 4500;
-    const fade = 1 - smoothstep(6000, 18000, camAltM);
+    // Complete fade-out strictly before 10 km on Earth and 18 km on Moon/Mars (zero floating discs)
+    const isEarth = this.activeConfig.id === "earth";
+    const fadeStart = isEarth ? 3800 : 7500;
+    const fadeEnd = isEarth ? 9800 : 17500;
+    const fade = 1 - smoothstep(fadeStart, fadeEnd, camAltM);
     if (fade <= 0.005) {
       for (const { mesh } of this.ringMeshes) {
         mesh.visible = false;
       }
       return;
     }
+
+    // Attenuate normal-map bump contrast smoothly during zoom-out (eliminates Moon swirling aliasing)
+    const baseNormal =
+      this.activeConfig.id === "moon" ? 0.48 : this.activeConfig.id === "mars" ? 0.76 : 0.90;
+    const normStrength = baseNormal * (1 - smoothstep(1000, fadeStart * 1.4, camAltM));
+    this.innerTerrainMaterial.normalScale.set(normStrength, normStrength);
+    this.outerTerrainMaterial.normalScale.set(normStrength * 0.65, normStrength * 0.65);
 
     const isBlending = fade < 0.995;
     this.innerTerrainMaterial.transparent = isBlending;
@@ -412,11 +492,10 @@ export class TerrainSystem {
     this.disposeEarthPbr();
 
     this.outerUniforms.uSatelliteTint.value.copy(getDefaultSiteTintColor(config.id));
-    this.outerUniforms.uFeatherInner.value = Math.min(
-      10000.0,
-      config.scale.localTerrainRadiusM * 0.35
-    );
-    this.outerUniforms.uFeatherOuter.value = config.scale.localTerrainRadiusM * 0.90;
+    this.outerUniforms.uFeatherInner.value = config.scale.localTerrainRadiusM * 0.42;
+    this.outerUniforms.uFeatherOuter.value = config.scale.localTerrainRadiusM * 0.95;
+    this.outerUniforms.uTintInner.value = config.scale.localTerrainRadiusM * 0.26;
+    this.outerUniforms.uIsEarth.value = config.id === "earth" ? 1.0 : 0.0;
 
     for (const old of this.ringMeshes) {
       this.group.remove(old.mesh);

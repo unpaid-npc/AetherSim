@@ -321,14 +321,12 @@ export class OrbitVisualizer {
     let vz = tel.booster.velocity.z;
 
     const dtStep = 4.5;
-    let impacted = false;
+    let activeCount = 0;
     for (let i = 0; i < MAX_BOOSTER_ARC_POINTS; i++) {
       this.boosterArcPositions[i * 3] = bx - origin.x;
       this.boosterArcPositions[i * 3 + 1] = by - origin.y;
       this.boosterArcPositions[i * 3 + 2] = bz - origin.z;
-      if (impacted) {
-        continue;
-      }
+      activeCount = i + 1;
       const rx = bx;
       const ry = by + R;
       const rz = bz;
@@ -346,12 +344,19 @@ export class OrbitVisualizer {
         bx *= s;
         by = (by + R) * s - R;
         bz *= s;
-        impacted = true;
+        if (i + 1 < MAX_BOOSTER_ARC_POINTS) {
+          this.boosterArcPositions[(i + 1) * 3] = bx - origin.x;
+          this.boosterArcPositions[(i + 1) * 3 + 1] = by - origin.y;
+          this.boosterArcPositions[(i + 1) * 3 + 2] = bz - origin.z;
+          activeCount = i + 2;
+        }
+        break;
       }
     }
 
     const attr = this.boosterArcGeo.getAttribute("position") as THREE.BufferAttribute;
     attr.needsUpdate = true;
+    this.boosterArcGeo.setDrawRange(0, activeCount);
     this.boosterArcLine.computeLineDistances();
   }
 
@@ -420,6 +425,7 @@ export class OrbitVisualizer {
       }
       const attr = this.trailGeo.getAttribute("position") as THREE.BufferAttribute;
       attr.needsUpdate = true;
+      this.trailGeo.setDrawRange(0, this.trailCount);
     }
 
     const showArc =
@@ -430,15 +436,28 @@ export class OrbitVisualizer {
     this.predictedLine.visible = showArc && showOverview;
     if (this.predictedLine.visible) {
       const pts = sampleOrbitPoints(tel.position, tel.velocity, R, mu, MAX_TRAJECTORY_POINTS - 2);
-      const count = Math.min(MAX_TRAJECTORY_POINTS, pts.length);
-      for (let i = 0; i < count; i++) {
-        this.predictedPositions[i * 3] = pts[i].x - renderOrigin.x;
-        this.predictedPositions[i * 3 + 1] = pts[i].y - renderOrigin.y;
-        this.predictedPositions[i * 3 + 2] = pts[i].z - renderOrigin.z;
+      const maxPts = Math.min(MAX_TRAJECTORY_POINTS, pts.length);
+      let validCount = 0;
+      for (let i = 0; i < maxPts; i++) {
+        const px = pts[i].x - renderOrigin.x;
+        const py = pts[i].y - renderOrigin.y;
+        const pz = pts[i].z - renderOrigin.z;
+        if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) {
+          continue;
+        }
+        this.predictedPositions[validCount * 3] = px;
+        this.predictedPositions[validCount * 3 + 1] = py;
+        this.predictedPositions[validCount * 3 + 2] = pz;
+        validCount += 1;
       }
-      const attr = this.predictedGeo.getAttribute("position") as THREE.BufferAttribute;
-      attr.needsUpdate = true;
-      this.predictedGeo.setDrawRange(0, count);
+      if (validCount < 2) {
+        this.predictedLine.visible = false;
+        this.predictedGeo.setDrawRange(0, 0);
+      } else {
+        const attr = this.predictedGeo.getAttribute("position") as THREE.BufferAttribute;
+        attr.needsUpdate = true;
+        this.predictedGeo.setDrawRange(0, validCount);
+      }
 
       if (tel.orbital.orbitAchieved) {
         this.predictedMat.color.set("#34d399");

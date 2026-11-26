@@ -756,7 +756,13 @@ export class PPOTrainer {
           clamp(guidance.yawCmd, -1, 1),
         ]);
         const lowAltWeight =
-          this.env.config.missionMode === "landing" && obsBuf[1] < 0.08 ? 2.0 : 1.0;
+          this.env.config.missionMode === "landing"
+            ? obsBuf[1] < 0.08
+              ? 2.0
+              : 1.0
+            : obsBuf[1] < 0.25
+              ? 1.5
+              : 1.0;
         const modelObs = this.normalizeObsIfEnabled(obsBuf, true, new Float32Array(OBS_DIM));
         epObs.push(modelObs);
         epAct.push(rawAct);
@@ -824,7 +830,13 @@ export class PPOTrainer {
           clamp(guidance.yawCmd, -1, 1),
         ]);
         const lowAltWeight =
-          this.env.config.missionMode === "landing" && obsBuf[1] < 0.08 ? 2.0 : 1.0;
+          this.env.config.missionMode === "landing"
+            ? obsBuf[1] < 0.08
+              ? 2.0
+              : 1.0
+            : obsBuf[1] < 0.25
+              ? 1.5
+              : 1.0;
 
         epObs.push(modelObs);
         epAct.push(expertAct);
@@ -906,7 +918,10 @@ export class PPOTrainer {
         statusMessage = `Pre-train finished on ${planetLabel} (${evalSummary.crashRatePct.toFixed(0)}% crash). Try 2. FAST TRAIN (PPO) to refine.`;
       }
     } else {
-      statusMessage = `Pre-train complete: ${candidateBest.evalSuccessRatePct.toFixed(0)}% (${candidateBest.evalSuccessCount}/${evalSummary.episodes}) launch success on ${planetLabel}.`;
+      statusMessage =
+        candidateBest.evalSuccessCount > 0
+          ? `Pre-train complete: ${candidateBest.evalSuccessRatePct.toFixed(0)}% (${candidateBest.evalSuccessCount}/${evalSummary.episodes}) launch success on ${planetLabel}. Click 3. FLY TRAINED AI!`
+          : `Pre-train complete: ${candidateBest.evalSuccessRatePct.toFixed(0)}% (${candidateBest.evalSuccessCount}/${evalSummary.episodes}) launch success on ${planetLabel}.`;
     }
 
     return {
@@ -957,7 +972,14 @@ export class PPOTrainer {
         }
       }
       totalRet += epRet;
-      if (lastTel.phase === "TOUCHDOWN") {
+      if (this.env.config.missionMode === "launch") {
+        const tiltDeg = (Math.hypot(lastTel.pitch, lastTel.roll) * 180) / Math.PI;
+        if (isLaunchSuccess(lastTel)) {
+          successes += 1;
+        } else if (lastTel.phase === "CRASHED" || tiltDeg > 65) {
+          crashes += 1;
+        }
+      } else if (lastTel.phase === "TOUCHDOWN") {
         if (lastTel.landingVerdict === "NOMINAL LANDING") {
           successes += 1;
         } else if (lastTel.landingVerdict === "HARD LANDING") {

@@ -113,6 +113,7 @@ export class CameraDirector {
   private lastFar = 80_000_000;
   private initialized = false;
   private inspectingOrbital = false;
+  private inspectedMinDist = 12;
   private readonly renderOrigin = { x: 0, y: 0, z: 0 };
   private readonly prevTrackedWorld = new THREE.Vector3();
   private readonly prevInspectedWorld = new THREE.Vector3();
@@ -302,9 +303,13 @@ export class CameraDirector {
     this.padRangeM = 0;
     this.globeBlend = 0;
 
+    const radius = ctx.inspectedOrbitalRadiusM ?? 32;
+    const inspectDist = clamp(radius * 1.7, 14, 105);
+    this.inspectedMinDist = clamp(radius * 0.55, 6, 36);
+
     const desiredFar = Math.max(500_000, this.simRadiusM * 26);
     this.controls.enabled = true;
-    this.controls.minDistance = 18;
+    this.controls.minDistance = this.inspectedMinDist;
     this.controls.maxDistance = this.simRadiusM * 10.0;
     this.controls.maxPolarAngle = Math.PI * 0.96;
     this.controls.zoomSpeed = 1.05;
@@ -314,34 +319,14 @@ export class CameraDirector {
     this.renderOrigin.z = satPos.z;
     this.prevInspectedWorld.copy(satPos);
 
-    this.sPlanetCenter.set(0, -this.simRadiusM, 0);
-    const radialUp = this.sTmpA.copy(satPos).sub(this.sPlanetCenter);
-    if (radialUp.lengthSq() > 1e-6) {
-      radialUp.normalize();
-    } else {
-      radialUp.set(0, 1, 0);
-    }
-
-    this.sTmpB.set(0, 0, 1);
-    const east = this.sTmpC.crossVectors(this.sTmpB, radialUp);
-    if (east.lengthSq() < 1e-5) {
-      east.set(1, 0, 0);
-    } else {
-      east.normalize();
-    }
-    const south = this.sTmpD.crossVectors(east, radialUp).normalize();
-
-    const inspectDist = clamp((ctx.inspectedOrbitalRadiusM ?? 55) * 1.65, 58, 128);
-    this.camera.position
-      .set(0, 0, 0)
-      .addScaledVector(east, inspectDist * 0.72)
-      .addScaledVector(south, inspectDist * 0.62)
-      .addScaledVector(radialUp, inspectDist * 0.32);
+    // Hero 3/4 sunlit framing with strictly level world-up (0, 1, 0) for roll-free OrbitControls
+    this.camera.position.set(
+      inspectDist * 0.68,
+      inspectDist * 0.34,
+      inspectDist * 0.65
+    );
     this.controls.target.set(0, 0, 0);
-
-    const forward = this.sTmpB.copy(this.controls.target).sub(this.camera.position).normalize();
-    this.orthonormalUp(forward, radialUp, this.sUpWorld);
-    this.camera.up.copy(this.sUpWorld);
+    this.camera.up.set(0, 1, 0);
     this.adaptClipPlanes(0, desiredFar, true);
     this.camera.fov = 48;
     this.camera.updateProjectionMatrix();
@@ -574,8 +559,7 @@ export class CameraDirector {
       this.sCamWorld.y = tel.padDeckY + 12;
     }
 
-    const forward = this.sTmpA.copy(this.sTgtWorld).sub(this.sCamWorld).normalize();
-    this.orthonormalUp(forward, frame.radialUp, this.sUpWorld);
+    this.sUpWorld.copy(frame.radialUp);
     return { fov: 50 };
   }
 
@@ -647,8 +631,7 @@ export class CameraDirector {
       .addScaledVector(south, 60)
       .addScaledVector(radialUp, 26);
 
-    const forward = this.sTmpB.copy(this.sTgtWorld).sub(this.sCamWorld).normalize();
-    this.orthonormalUp(forward, radialUp, this.sUpWorld);
+    this.sUpWorld.copy(radialUp);
     return { fov: 48 };
   }
 
@@ -697,10 +680,8 @@ export class CameraDirector {
       const mapDist = this.simRadiusM * 2.4;
       this.camera.position.copy(camDir).multiplyScalar(mapDist);
       this.controls.target.set(0, 0, 0);
-      this.sTmpD.set(0, 1, 0);
-      const forward = this.sTmpB.copy(camDir).negate();
-      this.orthonormalUp(forward, this.sTmpD, this.sUpWorld);
-      this.camera.up.copy(this.sUpWorld);
+      // Strictly keep world-up (0, 1, 0) aligned with OrbitControls' spherical axis -> zero drag roll
+      this.camera.up.set(0, 1, 0);
       this.adaptClipPlanes(mapDist - this.simRadiusM, desiredFar);
       this.camera.fov = 46;
       this.camera.updateProjectionMatrix();
@@ -725,14 +706,21 @@ export class CameraDirector {
       this.renderOrigin.y = anchor.y;
       this.renderOrigin.z = anchor.z;
 
-      const onPadEarth =
-        ctx.tel.planetId === "earth" &&
+      const onPadLaunch =
         frame.altitudeM < 50 &&
         ctx.tel.missionMode === "launch" &&
         this.focusMode === "rocket";
+      const onPadEarth = ctx.tel.planetId === "earth" && onPadLaunch;
+      const onPadMars = ctx.tel.planetId === "mars" && onPadLaunch;
 
       if (onPadEarth) {
         this.sCamWorld.set(-96, 40, 106);
+      } else if (onPadMars) {
+        // Elevated look-down framing (+18 m over default) so camera never sits behind foreground crater hills
+        this.sCamWorld
+          .copy(frame.horizDir)
+          .multiplyScalar(132)
+          .addScaledVector(frame.radialUp, 62);
       } else {
         this.sCamWorld
           .copy(frame.horizDir)
@@ -742,9 +730,8 @@ export class CameraDirector {
 
       this.controls.target.set(0, 0, 0);
       this.camera.position.copy(this.sCamWorld);
-      const forward = this.sTmpA.copy(this.controls.target).sub(this.camera.position).normalize();
-      this.orthonormalUp(forward, frame.radialUp, this.sUpWorld);
-      this.camera.up.copy(this.sUpWorld);
+      // Strictly keep world-up (0, 1, 0) aligned with OrbitControls' spherical axis -> zero figure-8 roll
+      this.camera.up.set(0, 1, 0);
       this.adaptClipPlanes(Math.max(25, frame.altitudeM), desiredFar);
       this.camera.fov = 52;
       this.camera.updateProjectionMatrix();
@@ -873,6 +860,7 @@ export class CameraDirector {
 
     if (this.mode === "map") {
       this.rebaseRenderOrigin(0, -this.simRadiusM, 0);
+      this.camera.up.set(0, 1, 0);
       this.controls.enabled = true;
       this.controls.minDistance = this.simRadiusM * 1.15;
       this.controls.maxDistance = this.simRadiusM * 12.0;
@@ -885,8 +873,9 @@ export class CameraDirector {
     }
 
     if (this.mode === "free" && this.inspectingOrbital && ctx.inspectedOrbitalPos) {
+      this.camera.up.set(0, 1, 0);
       this.controls.enabled = true;
-      this.controls.minDistance = 18;
+      this.controls.minDistance = this.inspectedMinDist;
       this.controls.maxDistance = this.simRadiusM * 10.0;
       this.controls.maxPolarAngle = Math.PI * 0.96;
 
@@ -918,6 +907,7 @@ export class CameraDirector {
     const frame = this.resolveLiveVehicleFrame(ctx, this.trackTarget, this.mode === "engine");
 
     if (this.mode === "free") {
+      this.camera.up.set(0, 1, 0);
       this.controls.enabled = true;
       this.controls.minDistance = 25;
       this.controls.maxDistance = this.simRadiusM * 3.8;

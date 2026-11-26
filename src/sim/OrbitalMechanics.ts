@@ -270,16 +270,24 @@ export function sampleOrbitPoints(
   const ez = vxhZ / mu - rz * invR;
   const e = Math.hypot(ex, ey, ez);
 
-  const pHat =
+  const hHat = { x: hx / hMag, y: hy / hMag, z: hz / hMag };
+  const rawP =
     e > 1e-4
       ? { x: ex / e, y: ey / e, z: ez / e }
       : { x: rx * invR, y: ry * invR, z: rz * invR };
-  const hHat = { x: hx / hMag, y: hy / hMag, z: hz / hMag };
-  const qHat = {
-    x: hHat.y * pHat.z - hHat.z * pHat.y,
-    y: hHat.z * pHat.x - hHat.x * pHat.z,
-    z: hHat.x * pHat.y - hHat.y * pHat.x,
-  };
+  // Orthogonalize pHat cleanly against hHat so near-circular orbits have zero basis drift
+  const pDotH = rawP.x * hHat.x + rawP.y * hHat.y + rawP.z * hHat.z;
+  const pOx = rawP.x - pDotH * hHat.x;
+  const pOy = rawP.y - pDotH * hHat.y;
+  const pOz = rawP.z - pDotH * hHat.z;
+  const pOLen = Math.max(1e-9, Math.hypot(pOx, pOy, pOz));
+  const pHat = { x: pOx / pOLen, y: pOy / pOLen, z: pOz / pOLen };
+
+  const qRawX = hHat.y * pHat.z - hHat.z * pHat.y;
+  const qRawY = hHat.z * pHat.x - hHat.x * pHat.z;
+  const qRawZ = hHat.x * pHat.y - hHat.y * pHat.x;
+  const qLen = Math.max(1e-9, Math.hypot(qRawX, qRawY, qRawZ));
+  const qHat = { x: qRawX / qLen, y: qRawY / qLen, z: qRawZ / qLen };
 
   const p = (hMag * hMag) / mu;
   const vSq = vx * vx + vy * vy + vz * vz;
@@ -299,12 +307,15 @@ export function sampleOrbitPoints(
     };
   };
 
-  // Closed bound orbit entirely above surface
+  // Closed bound orbit entirely above surface: guaranteed seamless loop with zero V-spike
   if (isBound && periapsisR > simRadiusM) {
     const pts: Vec3Like[] = [];
-    for (let i = 0; i <= numSamples; i++) {
+    for (let i = 0; i < numSamples; i++) {
       const nu = (i / numSamples) * Math.PI * 2;
       pts.push(pointAtNu(nu));
+    }
+    if (pts.length > 0) {
+      pts.push({ x: pts[0].x, y: pts[0].y, z: pts[0].z });
     }
     return pts;
   }
@@ -314,9 +325,15 @@ export function sampleOrbitPoints(
     if (nu0 < 0) nu0 += Math.PI * 2;
     const cosImp = clamp((p / simRadiusM - 1) / Math.max(e, 1e-6), -1, 1);
     const nuImpMag = Math.acos(cosImp);
-    let nuEnd = Math.PI * 2 - nuImpMag;
-    if (nuEnd <= nu0) {
-      nuEnd = Math.max(nu0 + 0.05, Math.PI * 2);
+    const nuEnd = Math.PI * 2 - nuImpMag;
+    // If spacecraft is already past impact true anomaly (descending right at surface), stop cleanly without wrapping through periapsis
+    if (nuEnd <= nu0 + 1e-4) {
+      const radEnd = Math.max(simRadiusM, rMag);
+      const scale = simRadiusM / radEnd;
+      return [
+        { x: worldPos.x, y: worldPos.y, z: worldPos.z },
+        { x: rx * scale, y: ry * scale - simRadiusM, z: rz * scale },
+      ];
     }
     const pts: Vec3Like[] = [];
     for (let i = 0; i <= numSamples; i++) {

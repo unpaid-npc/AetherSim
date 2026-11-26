@@ -5,8 +5,8 @@ Generated automatically by `npm run benchmark` ([scripts/run-benchmark.mjs](../s
 ---
 
 ## Experimental Protocol & Provenance
-- **Generated At (UTC):** `2026-11-26T06:03:20.120Z`
-- **Total Harness Wall Time:** `34867 ms`
+- **Generated At (UTC):** `2026-11-26T07:15:50.300Z`
+- **Total Harness Wall Time:** `39762 ms`
 - **Mission & Seeds:** 3D `landing` mode across **Mars, Earth, Moon**, evaluated over `20` paired deterministic domain-randomized trials per condition (seeds `42..61`).
 - **Policies Compared:**
   1. `untrained_ppo`: Fresh orthogonal-initialized `ActorCriticMLP` (`0` updates).

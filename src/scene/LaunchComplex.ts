@@ -21,6 +21,27 @@ interface OrbitalStationAnim {
 }
 
 /**
+ * Rewrites cylinder top/bottom cap UVs to world-space planar XZ coordinates (`u = x / tileSizeM`,
+ * `v = z / tileSizeM`) so downward engine-cam views show crisp uniform slabs with zero radial streaking.
+ */
+function applyPlanarCapUVs<T extends THREE.BufferGeometry>(geom: T, tileSizeM = 18): T {
+  const pos = geom.getAttribute("position");
+  const norm = geom.getAttribute("normal");
+  const uv = geom.getAttribute("uv");
+  if (!pos || !norm || !uv) {
+    return geom;
+  }
+  const invTile = 1 / Math.max(1, tileSizeM);
+  for (let i = 0; i < pos.count; i++) {
+    if (Math.abs(norm.getY(i)) > 0.7) {
+      uv.setXY(i, pos.getX(i) * invTile, pos.getZ(i) * invTile);
+    }
+  }
+  uv.needsUpdate = true;
+  return geom;
+}
+
+/**
  * Builds and manages planet-specific launch pads, surface stations/outposts,
  * and orbiting space stations for Earth, Mars, and Moon.
  */
@@ -30,6 +51,7 @@ export class LaunchComplex {
   private activeGroup = new THREE.Group();
   private orbitalStationHost = new THREE.Group();
   private padTextures: PbrTextureSet | null = null;
+  private padDeckTextures: PbrTextureSet | null = null;
   private disposables: Array<{ dispose(): void }> = [];
 
   private padDeckY = 18.0;
@@ -58,9 +80,10 @@ export class LaunchComplex {
     this.updatePlanet(initialConfig, maxAnisotropy, quality, initialSite);
   }
 
-  /** Strict scale-honest space culling: hides pad, tower, tanks & surface bases above 18 km. */
+  /** Strict scale-honest space culling: hides pad, tower, tanks & surface bases before globe transition. */
   setVisibilityForCameraAltitude(camAltM: number): void {
-    this.activeGroup.visible = camAltM < 18_000;
+    const cullAlt = this.activeConfig.id === "earth" ? 9_800 : 16_000;
+    this.activeGroup.visible = camAltM < cullAlt;
   }
 
   getPadDeckY(): number {
@@ -162,14 +185,36 @@ export class LaunchComplex {
 
     const padTex = generatePadConcreteTextureSet(config, maxAnisotropy);
     this.padTextures = padTex;
+    // Dedicated 1:1 repeat texture set for planar world-space XZ top-cap UVs (u = x/18, v = z/18)
+    const padDeckTex = generatePadConcreteTextureSet(config, maxAnisotropy);
+    padDeckTex.albedoMap.repeat.set(1, 1);
+    padDeckTex.normalMap.repeat.set(1, 1);
+    padDeckTex.roughnessMap.repeat.set(1, 1);
+    this.padDeckTextures = padDeckTex;
 
+    // Cap pad deck & concrete luminance strictly < 0.68 on Moon/Mars to prevent white bloom halo
+    const isEarth = config.id === "earth";
+    const isMars = config.id === "mars";
+    const deckColor = isEarth ? "#aeb4bc" : isMars ? "#8f7160" : "#787d84";
+    const concreteColor = isEarth ? "#b6bcc4" : isMars ? "#947868" : "#7d828a";
+
+    const padDeckMat = new THREE.MeshStandardMaterial({
+      color: deckColor,
+      map: padDeckTex.albedoMap,
+      normalMap: padDeckTex.normalMap,
+      roughnessMap: padDeckTex.roughnessMap,
+      roughness: isEarth ? 0.88 : 0.94,
+      metalness: 0.04,
+      emissiveIntensity: 0,
+    });
     const concreteMat = new THREE.MeshStandardMaterial({
-      color: "#d4d8dd",
+      color: concreteColor,
       map: padTex.albedoMap,
       normalMap: padTex.normalMap,
       roughnessMap: padTex.roughnessMap,
-      roughness: 0.88,
-      metalness: 0.05,
+      roughness: isEarth ? 0.88 : 0.93,
+      metalness: 0.04,
+      emissiveIntensity: 0,
     });
     const steelMat = new THREE.MeshStandardMaterial({
       color: "#4b5563",
@@ -177,15 +222,15 @@ export class LaunchComplex {
       roughness: 0.36,
     });
     const brightSteelMat = new THREE.MeshStandardMaterial({
-      color: "#bcc6d4",
+      color: isEarth ? "#bcc6d4" : "#9aa4b2",
       metalness: 0.82,
-      roughness: 0.28,
+      roughness: 0.30,
     });
-    // Matte industrial tank paint capped below 0.88 luminance so tanks never over-bloom
+    // Matte industrial tank/hab paint capped well below bloom threshold even under Moon 3.8 sun
     const whiteTankMat = new THREE.MeshStandardMaterial({
-      color: "#cdd4dc",
-      metalness: 0.14,
-      roughness: 0.54,
+      color: isEarth ? "#c5cdd6" : isMars ? "#b2aaa2" : "#99a0a8",
+      metalness: 0.12,
+      roughness: 0.58,
     });
     const goldSolarMat = new THREE.MeshStandardMaterial({
       color: "#c58f2a",
@@ -211,6 +256,7 @@ export class LaunchComplex {
     });
 
     this.disposables.push(
+      padDeckMat,
       concreteMat,
       steelMat,
       brightSteelMat,
@@ -224,6 +270,7 @@ export class LaunchComplex {
     if (config.id === "earth") {
       if (site.padStyle === "starbase_olm") {
         this.buildEarthStarbase(
+          padDeckMat,
           concreteMat,
           steelMat,
           brightSteelMat,
@@ -233,6 +280,7 @@ export class LaunchComplex {
       } else {
         this.buildEarthGlobalPad(
           site,
+          padDeckMat,
           concreteMat,
           steelMat,
           brightSteelMat,
@@ -243,7 +291,7 @@ export class LaunchComplex {
     } else if (config.id === "mars") {
       this.buildMarsSpaceport(
         config,
-        concreteMat,
+        padDeckMat,
         steelMat,
         brightSteelMat,
         whiteTankMat,
@@ -254,7 +302,7 @@ export class LaunchComplex {
     } else {
       this.buildMoonSpaceport(
         config,
-        concreteMat,
+        padDeckMat,
         steelMat,
         brightSteelMat,
         whiteTankMat,
@@ -264,17 +312,41 @@ export class LaunchComplex {
       );
     }
 
-    // Load real 4K Poly Haven PBR concrete maps asynchronously for authentic pad & OLM detail
-    void loadPbrTextureSet("concrete", 5, 5, maxAnisotropy, quality).then((pbr) => {
-      if (!pbr || seq !== this.loadSeq) {
-        return;
-      }
-      concreteMat.map = pbr.albedoMap;
-      concreteMat.normalMap = pbr.normalMap;
-      concreteMat.roughnessMap = pbr.roughnessMap;
-      concreteMat.needsUpdate = true;
-      this.disposables.push(pbr.albedoMap, pbr.normalMap, pbr.roughnessMap);
-    });
+    // Load real 4K Poly Haven PBR concrete maps asynchronously for Earth pad aprons & concrete legs
+    if (isEarth) {
+      void Promise.all([
+        loadPbrTextureSet("concrete", 5, 5, maxAnisotropy, quality),
+        loadPbrTextureSet("concrete", 1, 1, maxAnisotropy, quality),
+      ]).then(([legPbr, deckPbr]) => {
+        if (seq !== this.loadSeq) {
+          if (legPbr) {
+            legPbr.albedoMap.dispose();
+            legPbr.normalMap.dispose();
+            legPbr.roughnessMap.dispose();
+          }
+          if (deckPbr) {
+            deckPbr.albedoMap.dispose();
+            deckPbr.normalMap.dispose();
+            deckPbr.roughnessMap.dispose();
+          }
+          return;
+        }
+        if (legPbr) {
+          concreteMat.map = legPbr.albedoMap;
+          concreteMat.normalMap = legPbr.normalMap;
+          concreteMat.roughnessMap = legPbr.roughnessMap;
+          concreteMat.needsUpdate = true;
+          this.disposables.push(legPbr.albedoMap, legPbr.normalMap, legPbr.roughnessMap);
+        }
+        if (deckPbr) {
+          padDeckMat.map = deckPbr.albedoMap;
+          padDeckMat.normalMap = deckPbr.normalMap;
+          padDeckMat.roughnessMap = deckPbr.roughnessMap;
+          padDeckMat.needsUpdate = true;
+          this.disposables.push(deckPbr.albedoMap, deckPbr.normalMap, deckPbr.roughnessMap);
+        }
+      });
+    }
   }
 
   private trackGeom<T extends THREE.BufferGeometry>(geom: T): T {
@@ -283,6 +355,7 @@ export class LaunchComplex {
   }
 
   private buildEarthStarbase(
+    padDeckMat: THREE.MeshStandardMaterial,
     concreteMat: THREE.MeshStandardMaterial,
     steelMat: THREE.MeshStandardMaterial,
     brightSteelMat: THREE.MeshStandardMaterial,
@@ -292,10 +365,10 @@ export class LaunchComplex {
     this.padDeckY = 18.0;
     this.baseFocusTarget.set(16, 22, 0);
 
-    // Concrete apron + flame deluge trench pit
+    // Concrete apron (planar XZ top UVs -> zero radial streaking in F3 Engine) + flame deluge trench pit
     const apron = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(56, 60, 0.8, 48)),
-      concreteMat
+      this.trackGeom(applyPlanarCapUVs(new THREE.CylinderGeometry(56, 60, 0.8, 48), 18)),
+      padDeckMat
     );
     apron.position.y = -0.35;
     apron.receiveShadow = true;
@@ -345,7 +418,7 @@ export class LaunchComplex {
     this.activeGroup.add(olmRing);
 
     const olmDeck = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(11.4, 11.4, 1.0, 24)),
+      this.trackGeom(applyPlanarCapUVs(new THREE.CylinderGeometry(11.4, 11.4, 1.0, 24), 12)),
       steelMat
     );
     olmDeck.position.y = 17.5;
@@ -556,6 +629,7 @@ export class LaunchComplex {
 
   private buildEarthGlobalPad(
     site: LaunchSiteConfig,
+    padDeckMat: THREE.MeshStandardMaterial,
     concreteMat: THREE.MeshStandardMaterial,
     steelMat: THREE.MeshStandardMaterial,
     brightSteelMat: THREE.MeshStandardMaterial,
@@ -577,10 +651,10 @@ export class LaunchComplex {
     const noise = new SeededNoise2D(earth.terrain.seed);
     const gPad = samplePlanetTerrainHeight(0, 0, earth, noise, site);
 
-    // Reinforced octagonal launch apron + flame trench ramp
+    // Reinforced octagonal launch apron (planar XZ UVs eliminate Saturn V F3 radial streaking)
     const apron = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(42, 48, deckY + 2.0, 8)),
-      concreteMat
+      this.trackGeom(applyPlanarCapUVs(new THREE.CylinderGeometry(42, 48, deckY + 2.0, 8), 18)),
+      padDeckMat
     );
     apron.position.set(0, gPad + (deckY - 2.0) * 0.5, 0);
     apron.receiveShadow = true;
@@ -784,7 +858,7 @@ export class LaunchComplex {
 
   private buildMarsSpaceport(
     config: PlanetConfig,
-    concreteMat: THREE.MeshStandardMaterial,
+    padDeckMat: THREE.MeshStandardMaterial,
     steelMat: THREE.MeshStandardMaterial,
     brightSteelMat: THREE.MeshStandardMaterial,
     whiteTankMat: THREE.MeshStandardMaterial,
@@ -795,10 +869,10 @@ export class LaunchComplex {
     this.padDeckY = 2.2;
     this.baseFocusTarget.set(175, 10, -80);
 
-    // Sintered-regolith octagonal blast deck + radial flame trenches
+    // Sintered-regolith octagonal blast deck (matte capped albedo + planar XZ UVs)
     const deck = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(42, 48, 2.2, 8)),
-      concreteMat
+      this.trackGeom(applyPlanarCapUVs(new THREE.CylinderGeometry(42, 48, 2.2, 8), 18)),
+      padDeckMat
     );
     deck.position.y = 1.1;
     deck.receiveShadow = true;
@@ -860,8 +934,8 @@ export class LaunchComplex {
 
     // Foundation slab piercing slightly below terrain slope so modules never float
     const foundation = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(42, 46, 8, 12)),
-      concreteMat
+      this.trackGeom(applyPlanarCapUVs(new THREE.CylinderGeometry(42, 46, 8, 12), 18)),
+      padDeckMat
     );
     foundation.position.y = -3.4;
     foundation.receiveShadow = true;
@@ -944,7 +1018,7 @@ export class LaunchComplex {
 
   private buildMoonSpaceport(
     config: PlanetConfig,
-    concreteMat: THREE.MeshStandardMaterial,
+    padDeckMat: THREE.MeshStandardMaterial,
     steelMat: THREE.MeshStandardMaterial,
     brightSteelMat: THREE.MeshStandardMaterial,
     whiteTankMat: THREE.MeshStandardMaterial,
@@ -955,10 +1029,10 @@ export class LaunchComplex {
     this.padDeckY = 1.6;
     this.baseFocusTarget.set(-180, 10, -85);
 
-    // Sintered lunar regolith landing pad
+    // Sintered lunar regolith landing pad (matte capped albedo + planar XZ UVs, zero white bloom halo)
     const deck = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(40, 44, 1.6, 36)),
-      concreteMat
+      this.trackGeom(applyPlanarCapUVs(new THREE.CylinderGeometry(40, 44, 1.6, 36), 18)),
+      padDeckMat
     );
     deck.position.y = 0.8;
     deck.receiveShadow = true;
@@ -1025,8 +1099,8 @@ export class LaunchComplex {
     outpost.position.set(baseCenter.x, groundY, baseCenter.z);
 
     const padSlab = new THREE.Mesh(
-      this.trackGeom(new THREE.CylinderGeometry(38, 42, 8, 12)),
-      concreteMat
+      this.trackGeom(applyPlanarCapUVs(new THREE.CylinderGeometry(38, 42, 8, 12), 18)),
+      padDeckMat
     );
     padSlab.position.y = -3.4;
     padSlab.receiveShadow = true;
@@ -1085,6 +1159,8 @@ export class LaunchComplex {
     this.disposables = [];
     disposeTextureSet(this.padTextures);
     this.padTextures = null;
+    disposeTextureSet(this.padDeckTextures);
+    this.padDeckTextures = null;
     this.qdArmPivot = null;
     this.catchCarriageGroup = null;
     this.chopstickLeftPivot = null;
